@@ -131,10 +131,12 @@ function cleanDoc(key, d) {
       const end = cleanPlace(d.end);
       if (!end) return null;
       const stops = (Array.isArray(d.stops) ? d.stops : []).slice(0, 12)
-        .map(s => (s && ID_RE.test(s.id) && cleanPlace(s)) ? { id: s.id, ...cleanPlace(s) } : null).filter(Boolean);
+        .map(s => (s && ID_RE.test(s.id) && cleanPlace(s)) ? { id: s.id, ...cleanPlace(s), eta: Math.round(n(s.eta, 0, 6000, 0) * 10) / 10 } : null).filter(Boolean);
+      const t0 = ts(d.ts);
       return {
+        dep: n(d.dep, 0, 4102444800000, t0), planned: !!d.planned,
         driver: d.driver, riders: cleanRiders(d.riders, d.driver), start: cleanPlace(d.start), stops, end,
-        km: Math.round(n(d.km, 0, 5000, 0) * 10) / 10, mins: Math.round(n(d.mins, 0, 6000, 0)), back: !!d.back,
+        km: Math.round(n(d.km, 0, 5000, 0) * 10) / 10, mins: Math.round(n(d.mins, 0, 6000, 0) * 10) / 10, back: !!d.back,
         label: str(d.label, 40) || 'Jízda', night: !!d.night, sober: !!d.sober,
         nav: NAVS.includes(d.nav) ? d.nav : 'mapy', legs: !!d.legs, leg: Math.round(n(d.leg, 0, 20, 0)), ts: ts(d.ts)
       };
@@ -195,6 +197,22 @@ const GHOST = { id: '?', name: 'Neznámý', color: '#94A3B8', car: false };
 const M = id => members().find(m => m.id === id) || { ...GHOST, id };
 const offToday = () => new Set(docsOf(grp(), `off:${ymd()}:`).filter(x => x.on).map(x => x.id));
 const committed = () => new Set(docsOf(grp(), 'c:').filter(x => x.on).map(x => x.id));
+
+/* ---------- Who is holding this phone (stored only on this device) ---------- */
+const ME_KEY = 'whodrives.me', ME_SKIP = 'whodrives.meSkip';
+const readMap = k => { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch (e) { return {}; } };
+const writeMap = (k, m) => { try { localStorage.setItem(k, JSON.stringify(m)); } catch (e) {} };
+function meId(g = grp()) {
+  const id = g && readMap(ME_KEY)[g.id];
+  return id && g.docs['m:' + id]?.d && !g.docs['m:' + id].del ? id : null;
+}
+function setMe(id, g = grp()) {
+  const m = readMap(ME_KEY);
+  if (id) m[g.id] = id; else delete m[g.id];
+  writeMap(ME_KEY, m);
+}
+const meSkipped = (g = grp()) => !!readMap(ME_SKIP)[g.id];
+const youTag = id => (id && id === meId() ? ' <span class="tag you">ty</span>' : '');
 
 /* =====================================================================
    Domain logic
@@ -287,8 +305,10 @@ function createGroup({ title, kind, myName, myCar }) {
   const g = newGroup();
   const ord = Date.now();
   g.docs.settings = { d: cleanDoc('settings', { title, kind, rates: DEFAULT_RATES }), dirty: true };
-  g.docs['m:' + rid()] = { d: cleanDoc('m:x', { name: myName, color: PALETTE[0], car: myCar, order: ord }), dirty: true };
+  const myId = rid();
+  g.docs['m:' + myId] = { d: cleanDoc('m:x', { name: myName, color: PALETTE[0], car: myCar, order: ord }), dirty: true };
   store.current = g.id;
+  setMe(myId, g);
   persist(); scheduleSync();
   return g;
 }
@@ -306,6 +326,7 @@ function createDemo() {
       docs['r:' + rid()] = { d: cleanDoc('r:x', { label, km, driver: ids[drv], riders: riders.map(x => ids[x]), night, sober, ts: noon(ago) }) };
     });
     off.forEach(k => { docs[`off:${ymd()}:${ids[k]}`] = { d: { on: true } }; });
+    setMe(ids.dom, g);
     return g;
   };
   const a = make('Florbal – Trénink čtvrtek', 'Sportovní tým',
@@ -577,6 +598,14 @@ function renderHome() {
   const sorted = [...ms].sort((x, y) => b[y.id] - b[x.id]);
   const eco = ecoStats();
 
+  const me = meId(), g = grp();
+  const whoCard = !me && !g.demo && !meSkipped() ? `
+  <section class="card me-card">
+    <div class="me-head"><h4>👋 Kdo z vás jsi?</h4><button class="close-x" data-act="me-skip" type="button" aria-label="Teď ne">${icons.x}</button></div>
+    <p>Appka ti pak ukáže tvoji bilanci a v kolik tě kdo vyzvedne. Uloží se jen v tomhle telefonu.</p>
+    <div class="chips" style="margin-top:10px">${ms.map(m => `<button class="chip" data-act="set-me" data-id="${m.id}" type="button">${av(m)}<span class="nm">${esc(m.name)}</span></button>`).join('')}
+      <button class="chip" data-act="me-new" type="button">＋ <span class="nm">Nejsem tu</span></button></div>
+  </section>` : '';
   const hero = nd ? `
   <section class="today" aria-label="Dnešní řidič">
     <div class="lbl-row">
@@ -585,7 +614,7 @@ function renderHome() {
     </div>
     <div class="who">
       ${av(nd)}
-      <div><span class="big">${esc(nd.name)}</span><small>Férová volba podle ujetých km</small></div>
+      <div><span class="big">${nd.id === me ? 'Ty 🙂' : esc(nd.name)}</span><small>${nd.id === me ? `${esc(nd.name)}, jsi na řadě – férově podle ujetých km` : 'Férová volba podle ujetých km'}</small></div>
     </div>
     <p class="why">${esc(reason(nd))}</p>
     <div class="acts">
@@ -602,6 +631,7 @@ function renderHome() {
   </section>`;
 
   return `
+  ${whoCard}
   ${hero}
   <div class="eco-bar" title="Společný přínos skupiny díky tomu, že nejezdíte víc auty naráz">
     <div class="eco-item"><b>${eco.totalKm.toLocaleString('cs-CZ')} km</b><small>ujeto společně</small></div>
@@ -623,10 +653,10 @@ function renderHome() {
     if (v > 5) status = 'Odřízeno víc, než bylo nutné';
     else if (v < -5 && m.car) status = 'Má co dohánět za volantem';
     else if (v < -5) status = 'Bez auta → vyrovná přes QR';
-    return `<div class="row">
+    return `<div class="row${m.id === me ? ' me' : ''}">
       ${av(m)}
       <div class="main">
-        <b>${esc(m.name)}${!m.car ? ' <span class="tag nocar">bez auta</span>' : ''}</b>
+        <b>${esc(m.name)}${youTag(m.id)}${!m.car ? ' <span class="tag nocar">bez auta</span>' : ''}</b>
         <small>${status}</small>
         <div class="bar" aria-hidden="true"><i style="background:${v >= 0 ? 'var(--pos)' : 'var(--neg)'};${v >= 0 ? 'left' : 'right'}:50%;width:${w}%"></i></div>
       </div>
@@ -736,7 +766,7 @@ function renderGroup() {
     <button class="row row-btn" data-act="edit-member" data-id="${m.id}" type="button">
       ${av(m)}
       <span class="main">
-        <b>${esc(m.name)}</b>
+        <b>${esc(m.name)}${youTag(m.id)}</b>
         <small>${m.car ? '🚗 Má auto' : '🎒 Bez auta'}${m.car ? (m.iban ? ' • účet vyplněný' : ' • <span class="neg">chybí účet pro QR</span>') : ''}${showAddr ? (m.place ? ' • 📍 adresa' : ' • bez adresy') : ''}</small>
       </span>${icons.chev}
     </button>`).join('')}
@@ -769,6 +799,9 @@ function renderGroup() {
 
   <div class="sec"><span>Tohle zařízení</span></div>
   <div class="list">
+    <button class="row row-btn" data-act="pick-me" type="button">
+      <span class="main"><b>${meId() ? `Jsem ${esc(M(meId()).name)}` : 'Kdo jsem?'}</b><small>Podle toho appka ukazuje tvoje časy a bilanci. Ukládá se jen tady.</small></span>${icons.chev}
+    </button>
     <div class="row">
       <div class="main"><b>${g.demo ? 'Smazat ukázku' : 'Odebrat skupinu z telefonu'}</b><small>${g.secret && !g.demo ? 'Ostatním zůstane. Vrátíš se přes pozvánku.' : 'Data jsou jen tady, smažou se natrvalo.'}</small></div>
       <button class="btn danger sm" data-act="leave" type="button">${g.demo ? 'Smazat' : 'Odebrat'}</button>
@@ -797,7 +830,7 @@ function render({ animate = false } = {}) {
 /* =====================================================================
    Sheets
    ===================================================================== */
-let draft = null, qrCtx = null, lastFocus = null, sheetKind = null;
+let draft = null, qrCtx = null, lastFocus = null, sheetKind = null, meNext = false;
 const BG = ['#top', '#view', '#tabs', '#fab'];
 const sheetHead = title => `<div class="grab" aria-hidden="true"></div>
   <div class="sheet-head"><h3 id="sheetTitle" tabindex="-1">${esc(title)}</h3>
@@ -818,7 +851,7 @@ function closeSheet() {
   if (!$('#app').classList.contains('open')) return;
   $('#app').classList.remove('open');
   BG.forEach(s => $(s).removeAttribute('inert'));
-  draft = null; qrCtx = null; sheetKind = null; tp = null;
+  draft = null; qrCtx = null; sheetKind = null; tp = null; meNext = false;
   if (lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
 }
 
@@ -1168,7 +1201,10 @@ const actions = {
     const used = new Set(ms.map(m => m.color));
     const color = old?.color || PALETTE.find(c => !used.has(c)) || PALETTE[ms.length % PALETTE.length];
     const car = checked('fCar');
-    put('m:' + (id || rid()), { name, car, iban: acc.iban || '', color, order: old ? old.order : Date.now(), place: placeValue('member', old?.place) });
+    const newId = id || rid();
+    put('m:' + newId, { name, car, iban: acc.iban || '', color, order: old ? old.order : Date.now(), place: placeValue('member', old?.place) });
+    if (!id && meNext) setMe(newId);
+    meNext = false;
     const wasQr = qrCtx;
     closeSheet(); render();
     toast(old ? '✓ Uloženo' : `✓ ${name} je ve skupině.`);
@@ -1261,13 +1297,28 @@ const actions = {
     closeSheet(); render();
     toast(`✓ ${M(s.from).name} má vyrovnáno (${kcFmt(s.kc)}).`, { label: 'Vrátit', run: () => { del(key); render(); } });
   },
+  'set-me': t => {
+    setMe(t.dataset.id);
+    closeSheet(); render();
+    toast(`👋 Ahoj, ${M(t.dataset.id).name}!`);
+  },
+  'me-skip': () => { const m = readMap(ME_SKIP); m[grp().id] = 1; writeMap(ME_SKIP, m); render(); },
+  'me-new': () => { meNext = true; openMemberSheet(null); },
+  'pick-me': () => {
+    const me = meId();
+    openSheetShell(`${sheetHead('Kdo jsi?')}
+      <p class="hint" style="margin-top:4px">Vyber sebe. Uloží se jen v tomhle telefonu, ostatní to neuvidí.</p>
+      <div class="chips" style="margin-top:12px">${members().map(m => `<button class="chip ${m.id === me ? 'on' : ''}" data-act="set-me" data-id="${m.id}" type="button">${av(m)}<span class="nm">${esc(m.name)}</span></button>`).join('')}</div>
+      <div class="sheet-acts"><button class="btn soft" data-act="close-modal" type="button">Zavřít</button><button class="btn outline" data-act="me-new" type="button">Nejsem v seznamu</button></div>`, 'me');
+  },
   'convert-enc': () => {
-    const old = grp();
+    const old = grp(), oldMe = meId();
     if (!confirm('Vytvořit šifrovanou kopii skupiny s novým odkazem? Starý odkaz pak už nebude dostávat novinky – pošli partě ten nový.')) return;
     const g = newGroup();
     for (const [k, v] of Object.entries(old.docs)) if (!v.del && v.d) g.docs[k] = { d: v.d, dirty: true };
     store.current = g.id;
     delete store.groups[old.id];
+    if (oldMe) setMe(oldMe, g);
     persist(); scheduleSync(50); render();
     toast('🔒 Hotovo – skupina je šifrovaná. Pošli partě nový odkaz.');
   },
@@ -1341,6 +1392,8 @@ document.addEventListener('input', e => {
   if (e.target.id === 'labelIn') { draft.label = e.target.value.slice(0, 40); updateRidePreview(); }
   if (e.target.id === 'dateIn' && /^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) draft.date = e.target.value > ymd() ? ymd() : e.target.value;
 });
+// time pickers: react when the picker is closed (iOS fires "change" then), not on every spin
+document.addEventListener('change', e => { if (e.target.id === 'tpTime') tripTimeInput(e.target); });
 document.addEventListener('focusout', e => { if (e.target.id === 'kmIn' && draft && draft.km) e.target.value = draft.km; });
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.dataset?.place) { e.preventDefault(); placeEnter(e.target); return; }

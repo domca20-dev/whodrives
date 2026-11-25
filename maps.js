@@ -70,10 +70,12 @@ async function matrixM(starts, ends) {
   if (!Array.isArray(r?.matrix)) throw new Error('bad_matrix');
   return r.matrix; // [start][end] → { length (m), duration (s) }
 }
-async function routeM(start, end, via) {
+const isoLocal = t => { const d = new Date(t); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+async function routeM(start, end, via, dep) {
   const r = await mapy('/routing/route', {
     start: ll(start), end: ll(end), waypoints: via.length ? via.map(ll).join(';') : null,
-    routeType: 'car_fast_traffic', format: 'polyline', lang: 'cs'
+    routeType: 'car_fast_traffic', format: 'polyline', lang: 'cs',
+    departure: dep && dep - Date.now() > 10 * 60e3 ? isoLocal(dep) : null
   });
   if (!Number.isFinite(+r?.length) || !Number.isFinite(+r?.duration)) throw new Error('bad_route');
   return r;
@@ -106,7 +108,7 @@ function bestOrder(n, cost) {
   })(0, 0);
   return bestPath || Array.from({ length: n }, (_, i) => i + 1);
 }
-async function planRoute(start, picks, end) {
+async function planRoute(start, picks, end, dep) {
   const n = picks.length;
   if (n > MAX_PICKUPS) throw new Error('too_many');
   let order = picks.map((_, i) => i + 1);
@@ -123,13 +125,43 @@ async function planRoute(start, picks, end) {
     order = bestOrder(n, cost);
   }
   const ordered = order.map(i => picks[i - 1]);
-  const r = await routeM(start, end, ordered);
+  const r = await routeM(start, end, ordered, dep);
   return {
     order: ordered.map(p => p.id),
     km: +r.length / 1000,
     mins: +r.duration / 60,
     legs: Array.isArray(r.parts) ? r.parts.map(p => (+p.duration || 0) / 60) : []
   };
+}
+
+/* ---------- Times & the message for the group ---------- */
+const hm = t => new Date(t).toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+function dayWord(t) {
+  const d = new Date(t), today = new Date(), tm = new Date(); tm.setDate(today.getDate() + 1);
+  if (ymd(d) === ymd(today)) return '';
+  if (ymd(d) === ymd(tm)) return 'zítra ';
+  return d.toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'numeric' }) + ' ';
+}
+const whenText = t => `${dayWord(t)}v ${hm(t)}`;
+const isFuture = t => t - Date.now() > 10 * 60e3;
+
+function tripShareText(t) {
+  const me = meId(), d = M(t.driver);
+  const head = `🚗 ${t.driver === me ? 'Vyrážím' : `${d.name} vyráží`} ${isFuture(t.dep) || t.planned ? whenText(t.dep) : 'teď'} → ${t.label}`;
+  const lines = t.stops.map(s => `📍 ${M(s.id).name} – ${hm(t.dep + s.eta * 60e3)}`);
+  const onboard = t.riders.filter(id => id !== t.driver && !t.stops.some(s => s.id === id)).map(id => M(id).name);
+  if (onboard.length) lines.push(`🙋 ${onboard.join(', ')} – nástup u řidiče`);
+  lines.push(`🏁 ${t.label} – kolem ${hm(t.dep + t.mins * 60e3)}`);
+  return `${head}\n${lines.join('\n')}\nKdo nemůže, napište. (WhoDrives)`;
+}
+async function shareTrip(t) {
+  const text = tripShareText(t);
+  if (navigator.share) {
+    try { await navigator.share({ title: 'Jízda', text }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  if (sheetKind === 'trip') { copy(text); return; } // keep the planner open; just copy
+  openShareSheet('Poslat partě časy', text);
 }
 
 /* ---------- Navigation app links ---------- */
@@ -265,13 +297,26 @@ const placeValue = (fid, fallback) => (mapsReady() ? placeState[fid] || null : f
 let tp = null, tpTimer = null, tpSeq = 0;
 const navPref = () => { try { const v = localStorage.getItem('whodrives.nav'); return NAVS.includes(v) ? v : 'mapy'; } catch (e) { return 'mapy'; } };
 const shortLabel = s => String(s || '').split(',')[0];
+/** Departure time chosen in the planner (ms). */
+const tpDep = () => (!tp || tp.when === 'now' ? Date.now() : tp.at || Date.now());
+function tripTimeInput(el) {
+  if (!tp || !/^\d{2}:\d{2}$/.test(el.value)) return;
+  const [h, m] = el.value.split(':').map(Number);
+  const d = new Date(); d.setHours(h, m, 0, 0);
+  if (d.getTime() < Date.now() - 5 * 60e3) d.setDate(d.getDate() + 1); // a time that already passed means tomorrow
+  tp.at = d.getTime();
+  const lbl = document.getElementById('tpDay');
+  if (lbl) lbl.textContent = dayWord(tp.at) ? '→ ' + dayWord(tp.at).trim() : '→ dnes';
+  planSoon(700);
+}
 const startPoint = () => !tp ? null : tp.from === 'home' ? (M(tp.driver).place || null) : tp.gps;
 const pickups = () => tp.riders.filter(id => id !== tp.driver).map(id => M(id)).filter(m => m.place)
   .map(m => ({ id: m.id, lat: m.place.lat, lon: m.place.lon }));
 
 function openTripSheet() {
   const ms = members(), off = offToday(), nd = nextDriver();
-  const driver = (nd || ms.find(m => m.car))?.id;
+  const meM = ms.find(m => m.id === meId());
+  const driver = (meM && meM.car && !off.has(meM.id) ? meM : (nd || ms.find(m => m.car)))?.id;
   if (!driver) return toast('Nikdo s autem teď není k dispozici.');
   const pr = presets().find(p => p.place);
   const h = new Date().getHours();
@@ -281,6 +326,7 @@ function openTripSheet() {
     from: M(driver).place ? 'home' : 'gps', gps: null,
     dest: pr ? { ...pr.place, label: pr.label, preset: pr.id } : null,
     back: true, night: h >= 21 || h < 4, sober: false, nav: navPref(),
+    when: 'now', at: null,
     res: null, busy: false, err: '', sig: ''
   };
   openSheetShell('', 'trip');
@@ -302,7 +348,8 @@ function planSoon(delay = 400) {
   clearTimeout(tpTimer);
   const start = startPoint(), picks = pickups();
   if (!tp.dest || !start) { tp.res = null; tp.sig = ''; tp.busy = false; return renderTripSheet(); }
-  const sig = JSON.stringify([start.lat, start.lon, picks, tp.dest.lat, tp.dest.lon]);
+  const dep = tpDep();
+  const sig = JSON.stringify([start.lat, start.lon, picks, tp.dest.lat, tp.dest.lon, isFuture(dep) ? Math.round(dep / 300000) : 'now']);
   if (sig === tp.sig && (tp.res || tp.busy)) return renderTripSheet();
   tp.sig = sig; tp.res = null; tp.err = ''; tp.busy = true;
   renderTripSheet();
@@ -313,23 +360,26 @@ async function computePlan() {
   if (!tp) return;
   const seq = ++tpSeq, sig = tp.sig;
   let res = null, err = '';
-  try { res = await planRoute(startPoint(), pickups(), tp.dest); }
+  try { res = await planRoute(startPoint(), pickups(), tp.dest, tpDep()); }
   catch (e) { err = e.message === 'too_many' ? `Najednou zvládnu naplánovat nejvýš ${MAX_PICKUPS} zastávek.` : mapyErr(e); }
   if (!tp || seq !== tpSeq || tp.sig !== sig) return;
   tp.res = res; tp.err = err; tp.busy = false;
   renderTripSheet();
 }
 
-function buildTrip() {
+function buildTrip({ planned = false } = {}) {
   const start = startPoint(), r = tp.res;
-  const stops = r.order.map(id => { const m = M(id); return { id, label: m.name, lat: m.place.lat, lon: m.place.lon }; });
+  let cum = 0;
+  const stops = r.order.map((id, i) => { const m = M(id); cum += r.legs[i] || 0; return { id, label: m.name, lat: m.place.lat, lon: m.place.lon, eta: cum }; });
+  const dep = planned ? tpDep() : Date.now();
   return {
     driver: tp.driver, riders: [...tp.riders],
     start: start ? { label: tp.from === 'home' ? 'Domov' : 'Start', lat: start.lat, lon: start.lon } : null,
     stops, end: { label: shortLabel(tp.dest.label), lat: tp.dest.lat, lon: tp.dest.lon },
     km: r.km, mins: r.mins, back: tp.back,
     label: tp.dest.preset ? tp.dest.label : shortLabel(tp.dest.label),
-    night: tp.night, sober: tp.sober, nav: tp.nav, legs: needsLegs(tp.nav, stops.length), leg: 0, ts: Date.now()
+    night: tp.night, sober: tp.sober, nav: tp.nav, legs: needsLegs(tp.nav, stops.length), leg: 0, ts: Date.now(),
+    dep, planned
   };
 }
 
@@ -337,21 +387,22 @@ function tripResultHtml() {
   if (tp.riders.length < 2) return '<div class="preview warn">Vyber aspoň jednoho spolujezdce.</div>';
   if (!startPoint()) return `<div class="preview">${tp.from === 'gps' ? '📍 Zjišťuji tvoji polohu… (povol ji, nebo vyber start z domova)' : 'Řidič nemá uloženou adresu – vyber „Moje poloha“.'}</div>`;
   if (!tp.dest) return '<div class="preview">Vyber, kam jedete – oblíbenou trasu nebo adresu.</div>';
+  if (tp.when === 'pick' && !tp.at) return '<div class="preview">Zadej čas odjezdu – podle něj spočítám, kdy koho vyzvedneš.</div>';
   if (tp.busy) return '<div class="preview">⏳ Hledám nejrychlejší pořadí vyzvednutí…</div>';
   if (tp.err) return `<div class="preview warn">${esc(tp.err)}</div>`;
   if (!tp.res) return '';
-  const r = tp.res;
+  const r = tp.res, dep = tpDep();
   let t = 0;
   const rows = r.order.map((id, i) => {
     t += r.legs[i] || 0;
     const m = M(id);
-    return `<li>${av(m)}<span><b>${esc(m.name)}</b><small>${esc(shortLabel(m.place?.label))}</small></span><em>+${Math.max(1, Math.round(t))} min</em></li>`;
+    return `<li>${av(m)}<span><b>${esc(m.name)}${youTag(m.id)}</b><small>${esc(shortLabel(m.place?.label))}</small></span><em>${hm(dep + t * 60e3)}</em></li>`;
   }).join('');
   const total = Math.round(r.km * (tp.back ? 2 : 1));
   return `<ol class="stops">
-      <li><span class="stop-ico">🏠</span><span><b>Start</b><small>${esc(tp.from === 'home' ? shortLabel(M(tp.driver).place?.label) : 'Moje poloha')}</small></span><em>0 min</em></li>
+      <li><span class="stop-ico">🏠</span><span><b>Odjezd</b><small>${esc(tp.from === 'home' ? shortLabel(M(tp.driver).place?.label) : 'Moje poloha')}</small></span><em>${esc(dayWord(dep))}${hm(dep)}</em></li>
       ${rows}
-      <li><span class="stop-ico">🏁</span><span><b>${esc(shortLabel(tp.dest.label))}</b><small>cíl</small></span><em>${Math.round(r.mins)} min</em></li>
+      <li><span class="stop-ico">🏁</span><span><b>${esc(shortLabel(tp.dest.label))}</b><small>cíl</small></span><em>${hm(dep + r.mins * 60e3)}</em></li>
     </ol>
     <div class="preview">🚗 <b>${num(r.km, 1)} km</b> za cca <b>${Math.round(r.mins)} min</b>${tp.back ? ` · do bilance se zapíše <b>${total} km</b> (i cesta zpět)` : ''}.
       <span class="note">Objížďky kvůli vyzvedávání se řidiči započítají.</span></div>`;
@@ -365,7 +416,8 @@ function renderTripSheet() {
   const ms = members(), drv = M(tp.driver), prs = presets().filter(p => p.place);
   const others = ms.filter(m => m.id !== tp.driver);
   const noAddr = tp.riders.filter(id => id !== tp.driver && !M(id).place).map(id => M(id).name);
-  const ready = tp.res && !tp.busy && !tp.err && tp.riders.length >= 2;
+  const needTime = tp.when === 'pick' && !tp.at;
+  const ready = tp.res && !tp.busy && !tp.err && tp.riders.length >= 2 && !needTime;
   const n = tp.riders.length - 1;
   sheet.innerHTML = `${sheetHead('Vyrazit')}
   <div class="sec">Kdo řídí?</div>
@@ -391,6 +443,12 @@ function renderTripSheet() {
   </div>` : ''}
   ${placeFieldHtml('dest', tp.dest && !tp.dest.preset ? tp.dest : null, { label: prs.length ? 'Nebo jiná adresa' : 'Adresa cíle' })}
 
+  <div class="sec">Kdy vyrážíš?</div>
+  <div class="seg" role="radiogroup" aria-label="Odjezd">${[['now', 'Teď'], ['15', 'Za 15 min'], ['30', 'Za 30 min'], ['pick', 'Jindy']].map(([k, l]) => `
+    <button class="${tp.when === k ? 'on' : ''}" data-tp="when" data-v="${k}" type="button" role="radio" aria-checked="${tp.when === k}">${l}</button>`).join('')}
+  </div>
+  ${tp.when === 'pick' ? `<div class="label-row"><input class="inp" id="tpTime" type="time" step="300" value="${tp.at ? hm(tp.at) : ''}" aria-label="Čas odjezdu"><span class="hint" id="tpDay">${tp.at ? (dayWord(tp.at) ? '→ ' + dayWord(tp.at).trim() : '→ dnes') : 'Zadej čas'}</span></div>` : ''}
+
   <div class="sec">Do bilance</div>
   <div class="tog"><div id="lblBack"><b>↩️ Počítat i cestu zpět</b><small>Kilometry ×2, jako u oblíbených tras</small></div>
     <button class="sw2" data-tp="back" role="switch" aria-checked="${tp.back}" aria-labelledby="lblBack" type="button"></button></div>
@@ -409,10 +467,15 @@ function renderTripSheet() {
   ${tp.res && needsLegs(tp.nav, tp.res.order.length) ? `<span class="hint">${tp.nav === 'waze' ? 'Waze neumí víc zastávek najednou' : 'Google Maps v mobilu zvládne jen 3 zastávky'} – povedu tě po úsecích, další zastávku spustíš z appky.</span>` : ''}
 
   ${ready
-    ? `<a class="btn primary block" style="margin-top:16px" data-act="start-trip" href="${esc(navUrl(buildTrip()))}" target="_blank" rel="noopener noreferrer">▶ Vyrazit · ${NAV_NAMES[tp.nav]}</a>
-       ${geoPerm === 'granted' ? '<span class="hint ok">📍 Po příjezdu stačí otevřít appku – jízda se zapíše sama.</span>'
-         : '<button class="link-btn" data-act="geo-allow" type="button">📍 Povolit polohu, ať se jízda v cíli zapíše sama</button>'}`
-    : `<button class="btn primary" style="margin-top:16px" type="button" disabled>▶ Vyrazit</button>`}
+    ? (isFuture(tpDep())
+      ? `<button class="btn primary" style="margin-top:16px" data-act="plan-trip" type="button">📌 Naplánovat na ${esc(dayWord(tpDep()))}${hm(tpDep())}</button>
+         <button class="btn outline block" style="margin-top:8px" data-act="tp-share" type="button">📣 Poslat partě časy</button>
+         <span class="hint">Jízda se uloží celé partě. Až budeš vyrážet, klepni v liště na „Vyrazit“.</span>`
+      : `<a class="btn primary block" style="margin-top:16px" data-act="start-trip" href="${esc(navUrl(buildTrip()))}" target="_blank" rel="noopener noreferrer">▶ Vyrazit · ${NAV_NAMES[tp.nav]}</a>
+         <button class="btn outline block" style="margin-top:8px" data-act="tp-share" type="button">📣 Poslat partě časy</button>
+         ${geoPerm === 'granted' ? '<span class="hint ok">📍 Po příjezdu stačí otevřít appku – jízda se zapíše sama.</span>'
+           : '<button class="link-btn" data-act="geo-allow" type="button">📍 Povolit polohu, ať se jízda v cíli zapíše sama</button>'}`)
+    : `<button class="btn primary" style="margin-top:16px" type="button" disabled>${needTime ? 'Zadej čas odjezdu' : '▶ Vyrazit'}</button>`}
   <span class="hint attrib">Trasy a adresy: © Mapy.com</span>`;
   sheet.scrollTop = sc;
   if (typing != null) { const el = sheet.querySelector('[data-place="dest"]'); if (el) { el.value = typing; el.focus(); } }
@@ -431,6 +494,14 @@ function tripClick(t) {
   if (k === 'rider') tp.riders = tp.riders.includes(id) ? tp.riders.filter(x => x !== id) : [...tp.riders, id];
   if (k === 'dest') { const p = presets().find(x => x.id === id); if (p?.place) tp.dest = { ...p.place, label: p.label, preset: p.id }; }
   if (k === 'back' || k === 'night' || k === 'sober') { tp[k] = !tp[k]; return renderTripSheet(); }
+  if (k === 'when') {
+    tp.when = t.dataset.v;
+    if (tp.when === '15' || tp.when === '30') tp.at = Math.ceil((Date.now() + +tp.when * 60e3) / 300000) * 300000;
+    if (tp.when === 'pick' && !tp.at) tp.at = null;
+    renderTripSheet();
+    if (tp.when === 'pick') { document.getElementById('tpTime')?.focus(); if (!tp.at) return; }
+    return planSoon(0);
+  }
   if (k === 'nav') {
     tp.nav = t.dataset.v;
     try { localStorage.setItem('whodrives.nav', tp.nav); } catch (e) {}
@@ -453,24 +524,40 @@ function activeTrips() {
 }
 
 function tripBarsHtml() {
+  const me = meId();
   return activeTrips().map(t => {
     const d = M(t.driver), pts = navTargets(t), next = pts[0];
     const pickLeft = t.leg < t.stops.length;
     const total = Math.round(t.km * (t.back ? 2 : 1));
-    const old = Date.now() - t.ts > 12 * 3600e3;
     const nStops = t.stops.length;
+    const myStop = t.stops.find(s => s.id === me && me !== t.driver);
+    const mine = myStop ? ` · <b>u tebe ${hm(t.dep + myStop.eta * 60e3)}</b>` : '';
+    const summary = `${nStops ? `${nStops} ${plural(nStops, 'zastávka', 'zastávky', 'zastávek')} · ` : ''}${total} km`;
+    const share = `<button class="btn sm glass" data-act="trip-share" data-id="${t.id}" type="button" aria-label="Poslat partě časy">📣</button>`;
+    const cancel = `<button class="btn sm glass" data-act="trip-cancel" data-id="${t.id}" type="button" aria-label="Zrušit jízdu">✕</button>`;
+    const navLink = (cls, label, act) => `<a class="btn sm ${cls}" href="${esc(navUrl(t))}" target="_blank" rel="noopener noreferrer" data-act="${act}" data-id="${t.id}">${label}</a>`;
+    if (t.planned) {
+      const late = Date.now() - t.dep > 12 * 3600e3;
+      return `<section class="trip-bar planned" aria-label="Naplánovaná jízda">
+        <div class="tb-top"><span class="tb-lbl">${late ? '⏰ Jízda se nekonala?' : '🗓 Naplánovaná jízda'}</span><small>odjezd ${esc(whenText(t.dep))}</small></div>
+        <b class="tb-title">${esc(d.name)}${youTag(t.driver)} → ${esc(t.label)}</b>
+        <small class="tb-sub">${summary} · příjezd kolem ${hm(t.dep + t.mins * 60e3)}${mine}</small>
+        <div class="tb-acts">${navLink('accent', '▶ Vyrazit', 'trip-go')}${share}${cancel}</div>
+      </section>`;
+    }
+    const old = Date.now() - t.ts > 12 * 3600e3;
     const sub = t.legs && pickLeft
-      ? `Další zastávka: <b>${esc(next.name)}</b>`
-      : `${nStops ? `${nStops} ${plural(nStops, 'zastávka', 'zastávky', 'zastávek')} · ` : ''}${total} km · cca ${Math.round(t.mins)} min`;
+      ? `Další zastávka: <b>${esc(next.name)}</b>${mine}`
+      : `${summary} · v cíli kolem ${hm(t.dep + t.mins * 60e3)}${mine}`;
     return `<section class="trip-bar" aria-label="Probíhající jízda">
       <div class="tb-top"><span class="tb-lbl">${old ? '⏰ Jízda pořád běží' : '🚗 Jízda probíhá'}</span><small>${esc(dateLabel(t.ts))}</small></div>
-      <b class="tb-title">${esc(d.name)} → ${esc(t.label)}</b>
+      <b class="tb-title">${esc(d.name)}${youTag(t.driver)} → ${esc(t.label)}</b>
       <small class="tb-sub">${sub}</small>
       <div class="tb-acts">
-        <a class="btn sm accent" href="${esc(navUrl(t))}" target="_blank" rel="noopener noreferrer" data-act="trip-nav">Navigovat</a>
+        ${navLink('accent', 'Navigovat', 'trip-nav')}
         ${t.legs && pickLeft ? `<button class="btn sm glass" data-act="trip-next" data-id="${t.id}" type="button">✓ Vyzvednuto: ${esc(next.name)}</button>` : ''}
         <button class="btn sm light" data-act="trip-done" data-id="${t.id}" type="button">🏁 Dojeli jsme</button>
-        <button class="btn sm glass" data-act="trip-cancel" data-id="${t.id}" type="button" aria-label="Zrušit jízdu">✕</button>
+        ${share}${cancel}
       </div>
     </section>`;
   }).join('');
@@ -494,13 +581,13 @@ let arrivalBusy = false;
 async function checkArrival() {
   if (arrivalBusy || document.visibilityState !== 'visible') return;
   const mine = myTrips();
-  if (!activeTrips().some(t => mine.has(t.id))) return; // only the phone that started the trip decides
+  if (!activeTrips().some(t => mine.has(t.id) && !t.planned)) return; // only the phone that started the trip decides
   arrivalBusy = true;
   try {
     const pos = await currentPos();
     if (!pos) return;
     for (const t of activeTrips()) {
-      if (!mine.has(t.id) || Date.now() - t.ts < 3 * 60e3) continue;
+      if (!mine.has(t.id) || t.planned || Date.now() - t.ts < 3 * 60e3) continue;
       if (haversine(pos, t.end) <= 400) { finishTrip(t.id, true); continue; }
       if (t.legs && t.leg < t.stops.length && haversine(pos, t.stops[t.leg]) <= 250) {
         put('t:' + t.id, { ...t, leg: t.leg + 1 });
@@ -553,6 +640,22 @@ const mapActions = {
     setTimeout(() => { closeSheet(); tab = 'home'; render(); toast('🚗 Šťastnou cestu! V cíli otevři appku a jízda se zapíše sama.'); }, 80);
   },
   'trip-nav': () => {},
+  'tp-share': () => { if (tp?.res) shareTrip({ ...buildTrip({ planned: isFuture(tpDep()) }), dep: tpDep() }); },
+  'trip-share': t => { const doc = grp().docs['t:' + t.dataset.id]?.d; if (doc) shareTrip(doc); },
+  'plan-trip': () => {
+    if (!tp?.res) return;
+    const trip = buildTrip({ planned: true }), id = tp.id;
+    put('t:' + id, trip);
+    closeSheet(); tab = 'home'; render();
+    toast(`📌 Naplánováno na ${dayWord(trip.dep)}${hm(trip.dep)}. Pošli partě časy.`, { label: 'Poslat', run: () => shareTrip(trip) });
+  },
+  'trip-go': t => {
+    const id = t.dataset.id, doc = grp().docs['t:' + id]?.d;
+    if (!doc) return;
+    put('t:' + id, { ...doc, planned: false, ts: Date.now(), dep: Date.now() });
+    rememberTrip(id, true);
+    setTimeout(() => { render(); toast('🚗 Šťastnou cestu! V cíli otevři appku a jízda se zapíše sama.'); }, 80);
+  },
   'trip-next': t => {
     const doc = grp().docs['t:' + t.dataset.id]?.d;
     if (!doc) return;

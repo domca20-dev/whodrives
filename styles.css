@@ -579,3 +579,16 @@ a.btn { display: block; text-align: center; text-decoration: none; }
 .btn.light { background: #fff; color: #111; }
 .btn.glass { background: rgba(255,255,255,.12); color: #fff; }
 :root[data-theme="dark"] .btn.glass { background: var(--chip); color: var(--ink); }
+
+/* v2.4: "this is me", planned trips */
+.tag.you { background: var(--accent); color: var(--accent-ink); }
+.row.me { background: var(--brand-soft); }
+.me-card { margin-bottom: 14px; border-color: var(--accent); }
+.me-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.me-head h4 { margin: 0; }
+.me-card p { margin-top: 4px; }
+.trip-bar.planned { background: var(--surface); color: var(--ink); border: 1.5px dashed var(--accent); box-shadow: var(--shadow-sm); }
+.trip-bar.planned .tb-top small, .trip-bar.planned .tb-sub { color: var(--muted); }
+.trip-bar.planned .tb-sub b { color: var(--ink); }
+.trip-bar.planned .btn.glass { background: var(--chip); color: var(--ink); }
+.label-row .hint { white-space: nowrap; margin: 0; }
