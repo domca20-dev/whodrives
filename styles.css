@@ -592,3 +592,12 @@ a.btn { display: block; text-align: center; text-decoration: none; }
 .trip-bar.planned .tb-sub b { color: var(--ink); }
 .trip-bar.planned .btn.glass { background: var(--chip); color: var(--ink); }
 .label-row .hint { white-space: nowrap; margin: 0; }
+
+/* v2.5: seats, second car, drop-off trips */
+.seg.seg2 { grid-template-columns: 1fr 1fr; margin-top: 4px; }
+.seg.seg2 button { font-size: .84rem; padding: 10px 4px 9px; }
+.car-title { font-weight: 900; font-size: .86rem; margin: 10px 0 0; }
+.car2-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 10px 12px 9px; border-radius: 12px; background: var(--brand-soft); font-size: .84rem; }
+.car2-card .link-btn { flex: none; }
+.chip.car2 { cursor: default; }
+.preview.warn + .btn.outline { margin-top: -4px; margin-bottom: 8px; }

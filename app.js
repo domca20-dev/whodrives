@@ -114,7 +114,7 @@ function cleanDoc(key, d) {
       const name = str(d.name, 30);
       if (!name) return null;
       const iban = str(d.iban, 34).toUpperCase();
-      return withPlace({ name, color: /^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : '#475569', car: !!d.car, iban: ibanValid(iban) ? iban : '', order: n(d.order, 0, 1e13, 0) }, d.place);
+      return withPlace({ name, color: /^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : '#475569', car: !!d.car, iban: ibanValid(iban) ? iban : '', order: n(d.order, 0, 1e13, 0), seats: Math.round(n(d.seats, 2, 9, 5)) }, d.place);
     }
     case 'pr': {
       const label = str(d.label, 40);
@@ -134,7 +134,7 @@ function cleanDoc(key, d) {
         .map(s => (s && ID_RE.test(s.id) && cleanPlace(s)) ? { id: s.id, ...cleanPlace(s), eta: Math.round(n(s.eta, 0, 6000, 0) * 10) / 10 } : null).filter(Boolean);
       const t0 = ts(d.ts);
       return {
-        dep: n(d.dep, 0, 4102444800000, t0), planned: !!d.planned,
+        dep: n(d.dep, 0, 4102444800000, t0), planned: !!d.planned, ret: !!d.ret, log: d.log !== false,
         driver: d.driver, riders: cleanRiders(d.riders, d.driver), start: cleanPlace(d.start), stops, end,
         km: Math.round(n(d.km, 0, 5000, 0) * 10) / 10, mins: Math.round(n(d.mins, 0, 6000, 0) * 10) / 10, back: !!d.back,
         label: str(d.label, 40) || 'Jízda', night: !!d.night, sober: !!d.sober,
@@ -632,6 +632,7 @@ function renderHome() {
 
   return `
   ${whoCard}
+  ${returnCardHtml()}
   ${hero}
   <div class="eco-bar" title="Společný přínos skupiny díky tomu, že nejezdíte víc auty naráz">
     <div class="eco-item"><b>${eco.totalKm.toLocaleString('cs-CZ')} km</b><small>ujeto společně</small></div>
@@ -1004,6 +1005,10 @@ function openMemberSheet(id) {
     <label class="fld"><span>Jméno</span><input class="inp" id="fName" maxlength="30" placeholder="např. Michal" value="${esc(m?.name || '')}" ${m ? '' : 'autofocus'}></label>
     <div class="sw-row"><div id="lblCar"><b>🚗 Má auto</b><small>Může být řidič a vyrovnává řízením</small></div>
     <button class="sw2" id="fCar" data-s="toggle" role="switch" aria-checked="${m ? m.car : true}" aria-labelledby="lblCar" type="button"></button></div>
+    <label class="fld"><span>Míst v autě (i s řidičem)</span>
+      <select class="inp" id="fSeats">${[2, 3, 4, 5, 6, 7, 8, 9].map(k => `<option value="${k}" ${k === (m?.seats || 5) ? 'selected' : ''}>${k}${k === 5 ? ' – běžné auto' : k >= 7 ? ' – velké auto' : ''}</option>`).join('')}</select>
+      <span class="hint">Podle toho appka pozná, kdy je potřeba druhé auto.</span>
+    </label>
     <label class="fld"><span>Číslo účtu pro QR platby</span>
       <input class="inp" id="fIban" inputmode="text" autocomplete="off" spellcheck="false" maxlength="42" placeholder="123456789/0800 nebo CZ…" value="${esc(ibanToLocal(m?.iban))}">
       <span class="hint" id="ibanHint">Na tenhle účet pošlou peníze ti, kdo nemají auto. Uvidí ho jen lidé ve skupině.</span>
@@ -1202,7 +1207,7 @@ const actions = {
     const color = old?.color || PALETTE.find(c => !used.has(c)) || PALETTE[ms.length % PALETTE.length];
     const car = checked('fCar');
     const newId = id || rid();
-    put('m:' + newId, { name, car, iban: acc.iban || '', color, order: old ? old.order : Date.now(), place: placeValue('member', old?.place) });
+    put('m:' + newId, { name, car, iban: acc.iban || '', color, order: old ? old.order : Date.now(), place: placeValue('member', old?.place), seats: +val('fSeats') || old?.seats || 5 });
     if (!id && meNext) setMe(newId);
     meNext = false;
     const wasQr = qrCtx;
