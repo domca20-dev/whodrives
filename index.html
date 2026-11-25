@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="cs" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://*.supabase.co; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16191E" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="WhoDrives">
+<meta name="description" content="Kdo dnes řídí? Férové střídání aut v partě podle ujetých kilometrů.">
+<title>WhoDrives – kdo dnes řídí</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<script src="theme.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="phone">
+    <div class="app" id="app">
+      <header class="top" id="top">
+        <div class="grp">
+          <div class="ico" aria-hidden="true">W</div>
+          <button class="grp-switch" id="grpBtn" type="button" aria-expanded="false" aria-controls="grpPicker">
+            <span class="info">
+              <b id="grpTitle">WhoDrives</b>
+              <small id="grpSub"></small>
+            </span>
+            <svg class="caret" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <button class="icon-btn" id="themeBtn" type="button" aria-label="Přepnout tmavý režim"></button>
+        </div>
+        <div class="grp-picker" id="grpPicker"><div id="grpList"></div></div>
+      </header>
+
+      <main class="scroll" id="view" tabindex="-1"></main>
+
+      <button class="fab" id="fab" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Zapsat jízdu
+      </button>
+
+      <nav class="tabs" id="tabs" aria-label="Hlavní navigace">
+        <button data-tab="home" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M4 11l8-7 8 7v9H4z"/></svg>
+          Přehled
+        </button>
+        <button data-tab="rides" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+          Historie
+        </button>
+        <button data-tab="settle" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg>
+          Vyrovnání
+          <span class="count" id="settleCount" hidden></span>
+        </button>
+        <button data-tab="group" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3 3-5 6-5s6 2 6 5M16 5a3 3 0 010 6M18 15c2 .5 3 2 3 5"/></svg>
+          Skupina
+        </button>
+      </nav>
+
+      <div class="scrim" id="scrim"></div>
+      <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle"></div>
+      <div class="toast" id="toast" role="status" aria-live="polite"><span id="toastText"></span><button id="toastAct" type="button" hidden></button></div>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="qr.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
