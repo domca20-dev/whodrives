@@ -1125,6 +1125,10 @@ function switchGroup(id) {
 }
 const val = id => document.getElementById(id)?.value ?? '';
 const checked = id => document.getElementById(id)?.getAttribute('aria-checked') === 'true';
+async function withBusy(btn, fn) {
+  btn.disabled = true;
+  try { return await fn(); } finally { btn.disabled = false; }
+}
 function fieldError(id, msg) {
   const el = document.getElementById(id);
   el.classList.add('bad'); el.focus();
@@ -1152,13 +1156,14 @@ const actions = {
   },
   'add-member': () => openMemberSheet(null),
   'edit-member': t => openMemberSheet(t.dataset.id),
-  'save-member': t => {
+  'save-member': async t => {
     const id = t.dataset.id, name = val('fName').trim();
     if (!name) return fieldError('fName', 'Zadej jméno.');
     const acc = parseAccount(val('fIban'));
     if (acc.error) { document.getElementById('ibanHint').className = 'hint err'; document.getElementById('ibanHint').textContent = acc.error; return fieldError('fIban', acc.error); }
     const ms = members();
     if (ms.some(m => m.id !== id && m.name.toLocaleLowerCase('cs') === name.toLocaleLowerCase('cs'))) return fieldError('fName', 'Takové jméno už ve skupině je – přidej třeba iniciálu.');
+    if (mapsReady() && !(await withBusy(t, () => resolvePlace('member')))) return toast('Adresu se nepodařilo najít – oprav ji, nebo ji smaž.');
     const old = id ? ms.find(m => m.id === id) : null;
     const used = new Set(ms.map(m => m.color));
     const color = old?.color || PALETTE.find(c => !used.has(c)) || PALETTE[ms.length % PALETTE.length];
@@ -1181,10 +1186,11 @@ const actions = {
   },
   'add-preset': () => openPresetSheet(null),
   'edit-preset': t => openPresetSheet(t.dataset.id),
-  'save-preset': t => {
+  'save-preset': async t => {
     const label = val('fLabel').trim(), km = Math.round(+val('fKm'));
     if (!label) return fieldError('fLabel', 'Zadej název trasy.');
     if (!(km >= 1 && km <= 5000)) return fieldError('fKm', 'Zadej kilometry (1–5000).');
+    if (mapsReady() && !(await withBusy(t, () => resolvePlace('preset')))) return toast('Adresu cíle se nepodařilo najít – oprav ji, nebo ji smaž.');
     const old = t.dataset.id ? presets().find(p => p.id === t.dataset.id) : null;
     put('pr:' + (t.dataset.id || rid()), { label, km, order: old ? old.order : Date.now(), place: placeValue('preset', old?.place) });
     closeSheet(); render(); toast('✓ Trasa uložena');
@@ -1337,6 +1343,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('focusout', e => { if (e.target.id === 'kmIn' && draft && draft.km) e.target.value = draft.km; });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.dataset?.place) { e.preventDefault(); placeEnter(e.target); return; }
   if (e.key === 'Enter' && e.target.matches?.('#sheet input.inp:not(#labelIn):not([data-place])')) {
     const primary = document.querySelector('#sheet .sheet-acts .btn.primary');
     if (primary) { e.preventDefault(); primary.click(); }

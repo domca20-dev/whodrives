@@ -41,8 +41,9 @@ function mapyErr(e) {
   if (e?.status === 404 || e?.status === 422) return 'Mezi těmi místy se nepodařilo najít cestu autem.';
   return navigator.onLine ? 'Mapy.com teď neodpovídají – zkus to za chvilku.' : 'Jsi offline – trasu teď spočítat nejde.';
 }
-const ll = p => `${p.lon},${p.lat}`;
-const latlng = p => `${p.lat},${p.lon}`;
+const fix5 = x => (Math.round(+x * 1e5) / 1e5).toString();
+const ll = p => `${fix5(p.lon)},${fix5(p.lat)}`;
+const latlng = p => `${fix5(p.lat)},${fix5(p.lon)}`;
 
 function placeFromItem(it) {
   const lat = +it?.position?.lat, lon = +it?.position?.lon;
@@ -50,12 +51,14 @@ function placeFromItem(it) {
   const name = String(it.name || '').slice(0, 80), sub = String(it.location || '').slice(0, 80);
   return { name, sub, label: [name, sub].filter(Boolean).join(', ').slice(0, 120), lat, lon };
 }
+const PLACE_TYPES = ['regional.address', 'regional.street', 'regional.municipality_part', 'regional.municipality', 'poi'];
 async function suggestPlaces(q) {
-  const r = await mapy('/suggest', {
-    query: q.slice(0, 150), lang: 'cs', limit: 6, preferBBox: CZ_BBOX,
-    type: ['regional.address', 'regional.street', 'regional.municipality_part', 'regional.municipality', 'poi']
-  });
+  const r = await mapy('/suggest', { query: q.slice(0, 150), lang: 'cs', limit: 6, preferBBox: CZ_BBOX, type: PLACE_TYPES });
   return (r?.items || []).map(placeFromItem).filter(Boolean);
+}
+async function geocodePlace(q) {
+  const r = await mapy('/geocode', { query: q.slice(0, 150), lang: 'cs', limit: 1, preferBBox: CZ_BBOX, type: PLACE_TYPES });
+  return placeFromItem(r?.items?.[0]);
 }
 async function reverseGeocode(p) {
   const r = await mapy('/rgeocode', { lon: p.lon, lat: p.lat, lang: 'cs' });
@@ -144,19 +147,19 @@ function navUrl(trip) {
       if (via.length) q.set('waypoints', via.map(latlng).join('|'));
       return 'https://www.google.com/maps/dir/?' + q;
     }
-    case 'apple': {
-      const q = new URLSearchParams({ destination: latlng(dest), mode: 'driving' });
-      via.forEach(p => q.append('waypoint', latlng(p)));
-      return 'https://maps.apple.com/directions?' + q;
-    }
+    case 'apple':
+      return `https://maps.apple.com/directions?destination=${latlng(dest)}${via.map(p => '&waypoint=' + latlng(p)).join('')}&mode=driving`;
     case 'waze':
-      return `https://waze.com/ul?ll=${encodeURIComponent(latlng(dest))}&navigate=yes`;
+      return `https://waze.com/ul?ll=${latlng(dest)}&navigate=yes`;
     default: {
+      // same order and format as the examples in the Mapy.com docs; coordinates are plain numbers, no encoding needed
       const from = trip.leg ? trip.stops[trip.leg - 1] : trip.start;
-      const q = new URLSearchParams({ end: ll(dest), routeType: 'car_fast_traffic', navigate: 'true' });
-      if (from) q.set('start', ll(from));
-      if (via.length) q.set('waypoints', via.map(ll).join(';'));
-      return 'https://mapy.com/fnc/v1/route?' + q;
+      const parts = [];
+      if (from) parts.push('start=' + ll(from));
+      parts.push('end=' + ll(dest), 'routeType=car_fast_traffic');
+      if (via.length) parts.push('waypoints=' + via.map(ll).join(';'));
+      parts.push('navigate=true');
+      return 'https://mapy.com/fnc/v1/route?' + parts.join('&');
     }
   }
 }
@@ -185,7 +188,7 @@ function currentPos({ prompt = false } = {}) {
 }
 
 /* ---------- Address field with autocomplete ---------- */
-const placeState = {}, placeOpts = {}, placeTimers = {}, placeResults = {};
+const placeState = {}, placeOpts = {}, placeTimers = {}, placeResults = {}, placeQuery = {};
 function placeFieldHtml(fid, place, { label, hint = '', gps = false } = {}) {
   placeState[fid] = place ? { label: place.label, lat: place.lat, lon: place.lon } : null;
   placeOpts[fid] = { gps };
@@ -210,7 +213,7 @@ function placeInput(el) {
     try {
       const items = await suggestPlaces(q);
       if (el.value.trim() !== q) return; // user kept typing
-      placeResults[fid] = items;
+      placeResults[fid] = items; placeQuery[fid] = q;
       const b = document.getElementById('sg-' + fid);
       if (!b) return;
       b.innerHTML = items.length
@@ -221,6 +224,31 @@ function placeInput(el) {
       if (b) b.innerHTML = `<span class="hint err">${esc(mapyErr(e))}</span>`;
     }
   }, 300);
+}
+function pickPlace(fid, it) {
+  placeState[fid] = { label: it.label, lat: it.lat, lon: it.lon };
+  refreshPlace(fid);
+}
+/** Turns text typed into an address field (but not picked from the list) into a place. Returns false if it can't. */
+async function resolvePlace(fid) {
+  const el = document.querySelector(`[data-place="${fid}"]`);
+  const q = el?.value.trim();
+  if (placeState[fid] || !q) return true;
+  clearTimeout(placeTimers[fid]);
+  let it = placeQuery[fid] === q ? placeResults[fid]?.[0] : null;
+  const box = document.getElementById('sg-' + fid);
+  try { if (!it) it = await geocodePlace(q); }
+  catch (e) { if (box) box.innerHTML = `<span class="hint err">${esc(mapyErr(e))}</span>`; return false; }
+  if (!it) {
+    if (box) box.innerHTML = '<span class="hint err">Tuhle adresu Mapy.com neznají – zkus ji napsat jinak, nebo vyber ze seznamu.</span>';
+    el?.classList.add('bad');
+    return false;
+  }
+  pickPlace(fid, it);
+  return true;
+}
+async function placeEnter(el) {
+  if (await resolvePlace(el.dataset.place)) toast('📍 Adresa vybrána – zkontroluj, že sedí.');
 }
 function refreshPlace(fid) {
   const el = document.getElementById('pf-' + fid);
@@ -457,7 +485,7 @@ function finishTrip(id, auto) {
   rememberTrip(id, false);
   if (committed().has(doc.driver)) put('c:' + doc.driver, { on: false });
   render();
-  toast(`🏁 ${auto ? 'Jste v cíli – ' : ''}jízda zapsána (${km} km).`, {
+  toast(`🏁 ${auto ? 'Jste v cíli – jízda zapsána' : 'Jízda zapsána'} (${km} km).`, {
     label: 'Vrátit', run: () => { del('r:' + id); put('t:' + id, doc); rememberTrip(id, true); render(); }
   });
 }
@@ -493,9 +521,7 @@ const mapActions = {
   'trip': () => openTripSheet(),
   'place-pick': t => {
     const fid = t.dataset.f, it = placeResults[fid]?.[+t.dataset.i];
-    if (!it) return;
-    placeState[fid] = { label: it.label, lat: it.lat, lon: it.lon };
-    refreshPlace(fid);
+    if (it) pickPlace(fid, it);
   },
   'place-clear': t => {
     const fid = t.dataset.f;
