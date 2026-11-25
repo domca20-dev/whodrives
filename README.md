@@ -21,7 +21,7 @@ Kdo dnes řídí? Férové střídání aut v partě podle ujetých kilometrů. 
 2. V Project Settings → API zkopíruj *Project URL* a *publishable/anon key* do `config.js`.
 3. **GitHub Pages**: nahraj složku do repozitáře, zapni Pages z větve `main`. Appka poběží na `https://<uživatel>.github.io/<repo>/`.
 4. **Mapy.com** (volitelné, zdarma 250 000 kreditů/měsíc): na developer.mapy.com založ projekt a API klíč, omez ho na doménu appky a vlož do `config.js` jako `mapyKey`. Bez klíče se plánování tras jen schová.
-5. Při každém dalším nasazení zvyš `VERSION` v `sw.js`, ať se telefonům stáhne nová verze.
+5. Při každém dalším nasazení zvyš verzi na jednom místě: `VERSION` v `sw.js` a `?v=` u souborů v `index.html` (stejné číslo). Telefony si pak stáhnou celou novou sadu najednou.
 
 ## Bezpečnost
 - Nové skupiny jsou šifrované end-to-end (AES-GCM). Klíč i přihlašovací token se odvozují z tajemství v pozvánce, server dostane jen token a uloží jen šifru. Starší skupiny jde převést tlačítkem ve Skupině.
