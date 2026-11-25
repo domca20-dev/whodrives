@@ -1,5 +1,5 @@
 // Offline cache for the app shell. Bump VERSION on every deploy.
-const VERSION = 'wd-v2.1.0';
+const VERSION = 'wd-v2.2.0';
 const SHELL = ['./', 'index.html', 'styles.css', 'theme.js', 'config.js', 'qr.js', 'app.js', 'manifest.webmanifest', 'icon.svg', 'logo.svg', 'icon-192.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
