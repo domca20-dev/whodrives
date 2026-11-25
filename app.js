@@ -1270,6 +1270,10 @@ if (store.current && !store.groups[store.current]) store.current = Object.keys(s
 handleJoinLink();
 render();
 scheduleSync(50);
+addEventListener('hashchange', () => {
+  if (!/^#join=/.test(location.hash)) return;
+  closeSheet(); handleJoinLink(); render({ animate: true }); scheduleSync(50);
+});
 
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
