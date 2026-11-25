@@ -2,5 +2,7 @@
 // Klíč je "publishable"/"anon" – je veřejný z principu, data chrání databázové funkce v supabase/schema.sql.
 window.WHODRIVES_CONFIG = {
   supabaseUrl: 'https://wgmfrgphuttwmdmmhzep.supabase.co',
-  supabaseKey: 'sb_publishable_7M2LfX3dTTgs6GsK9vVtdg_rtzpedxN'
+  supabaseKey: 'sb_publishable_7M2LfX3dTTgs6GsK9vVtdg_rtzpedxN',
+  // Mapy.com REST API (adresy, trasy). Klíč je omezený jen na doménu appky.
+  mapyKey: ''
 };

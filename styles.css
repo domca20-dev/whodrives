@@ -517,3 +517,65 @@ select.inp { appearance: none; -webkit-appearance: none; background-image: linea
 .label-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 .label-row .inp { flex: 1; padding: 9px 12px 7px; font-size: .92rem; }
 .loading { text-align: center; color: var(--muted); padding: 60px 20px; font-weight: 700; }
+
+/* =====================================================================
+   v2.3: addresses, trip planner, trip in progress
+   ===================================================================== */
+a.btn { display: block; text-align: center; text-decoration: none; }
+.today .acts .btn.ghost { flex: none; }
+.chip[disabled] { opacity: .45; cursor: not-allowed; }
+.fld .link-btn { display: inline-block; margin-top: 6px; }
+
+.sugg { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.sugg:empty { display: none; }
+.sugg-item {
+  display: block; width: 100%; text-align: left;
+  background: var(--surface); border: 1.5px solid var(--line); border-radius: 12px;
+  padding: 9px 12px 8px;
+}
+.sugg-item:hover { border-color: var(--accent); }
+.sugg-item b { display: block; font-size: .9rem; }
+.sugg-item small { display: block; color: var(--muted); font-size: .76rem; }
+.place-chosen {
+  display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  background: var(--brand-soft); border-radius: 12px; padding: 10px 12px 9px;
+  font-weight: 700; font-size: .9rem;
+}
+.place-chosen span { min-width: 0; }
+.place-chosen .link-btn { flex: none; }
+
+.seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; background: var(--chip); padding: 4px; border-radius: 12px; }
+.seg button { border: 0; background: none; border-radius: 9px; padding: 8px 2px 7px; font-size: .74rem; font-weight: 800; color: var(--muted); }
+.seg button.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); }
+
+.stops { list-style: none; margin: 0; padding: 4px 0 0; position: relative; }
+.stops::before { content: ""; position: absolute; left: 17px; top: 22px; bottom: 22px; width: 2px; background: var(--line-strong); }
+.stops li { display: flex; align-items: center; gap: 12px; padding: 7px 0; position: relative; }
+.stops li > span:nth-child(2) { flex: 1; min-width: 0; }
+.stops b { display: block; font-size: .92rem; line-height: 1.25; }
+.stops small { display: block; color: var(--muted); font-size: .76rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stops em { font-style: normal; font-weight: 800; font-size: .8rem; color: var(--brand); white-space: nowrap; }
+.stop-ico { width: 36px; height: 36px; border-radius: 50%; background: var(--chip); display: grid; place-items: center; flex: none; font-size: 1rem; position: relative; }
+.hint.attrib { text-align: center; margin-top: 14px; font-size: .7rem; }
+
+.trip-bar {
+  background: var(--asphalt); color: #fff;
+  border-radius: 20px; padding: 14px 14px 12px 16px; margin-bottom: 14px;
+  border: 1px solid rgba(255,255,255,.08); box-shadow: 0 12px 28px -12px rgba(0,0,0,.5);
+}
+:root[data-theme="dark"] .trip-bar { background: var(--surface); border-color: var(--accent); }
+.tb-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.tb-lbl { font-size: .7rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); }
+.tb-top small { color: rgba(255,255,255,.6); font-size: .74rem; font-weight: 700; }
+.tb-title { display: block; font-size: 1.15rem; font-weight: 900; margin-top: 4px; line-height: 1.25; }
+.tb-sub { display: block; color: rgba(255,255,255,.72); font-size: .8rem; margin-top: 2px; }
+.tb-sub b { color: #fff; }
+:root[data-theme="dark"] .tb-top small, :root[data-theme="dark"] .tb-sub { color: var(--muted); }
+:root[data-theme="dark"] .tb-sub b { color: var(--ink); }
+.tb-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.tb-acts .btn { flex: 1 1 auto; }
+.tb-acts .btn[aria-label] { flex: none; }
+.btn.accent { background: var(--accent); color: var(--accent-ink); }
+.btn.light { background: #fff; color: #111; }
+.btn.glass { background: rgba(255,255,255,.12); color: #fff; }
+:root[data-theme="dark"] .btn.glass { background: var(--chip); color: var(--ink); }

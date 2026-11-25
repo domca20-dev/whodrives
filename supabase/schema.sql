@@ -88,7 +88,7 @@ begin
   for item in select * from jsonb_array_elements(p_docs) loop
     v_key := item->>'k';
     if v_key is null or length(v_key) > 64
-       or v_key !~ '^(settings|(m|pr|r|p|c):[a-z0-9]{1,24}|off:[0-9]{4}-[0-9]{2}-[0-9]{2}:[a-z0-9]{1,24})$' then
+       or v_key !~ '^(settings|(m|pr|r|p|c|t):[a-z0-9]{1,24}|off:[0-9]{4}-[0-9]{2}-[0-9]{2}:[a-z0-9]{1,24})$' then
       raise exception 'bad_key' using errcode = '22023';
     end if;
     if pg_column_size(item->'d') > 4096 then

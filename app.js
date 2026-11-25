@@ -10,6 +10,7 @@
 
 const CONF = window.WHODRIVES_CONFIG || {};
 const SYNC_ON = !!(CONF.supabaseUrl && CONF.supabaseKey);
+const MAPY_ON = !!CONF.mapyKey;
 const STORE_KEY = 'whodrives.v3';
 const BONUS = { night: 1.2, sober: 1.5 };
 const DEFAULT_RATES = { fuel: 2.6, amort: 1.4 };
@@ -87,6 +88,19 @@ const ID_RE = /^[a-z0-9]{1,24}$/;
 const str = (v, max) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
 const n = (v, a, b, d) => { const x = +v; return Number.isFinite(x) ? clamp(x, a, b) : d; };
 const ts = v => n(v, 0, 4102444800000, Date.now());
+function cleanPlace(p) {
+  if (!p || typeof p !== 'object') return null;
+  const lat = +p.lat, lon = +p.lon;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { label: str(p.label, 120) || 'Místo', lat: Math.round(lat * 1e5) / 1e5, lon: Math.round(lon * 1e5) / 1e5 };
+}
+const withPlace = (o, p) => { const pl = cleanPlace(p); if (pl) o.place = pl; return o; };
+const cleanRiders = (list, driver) => {
+  const riders = Array.isArray(list) ? [...new Set(list.filter(x => ID_RE.test(x)))].slice(0, 30) : [];
+  if (!riders.includes(driver)) riders.unshift(driver);
+  return riders;
+};
+const NAVS = ['mapy', 'google', 'apple', 'waze'];
 
 function cleanDoc(key, d) {
   if (!d || typeof d !== 'object') return null;
@@ -100,17 +114,30 @@ function cleanDoc(key, d) {
       const name = str(d.name, 30);
       if (!name) return null;
       const iban = str(d.iban, 34).toUpperCase();
-      return { name, color: /^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : '#475569', car: !!d.car, iban: ibanValid(iban) ? iban : '', order: n(d.order, 0, 1e13, 0) };
+      return withPlace({ name, color: /^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : '#475569', car: !!d.car, iban: ibanValid(iban) ? iban : '', order: n(d.order, 0, 1e13, 0) }, d.place);
     }
     case 'pr': {
       const label = str(d.label, 40);
-      return label ? { label, km: Math.round(n(d.km, 1, 5000, 10)), order: n(d.order, 0, 1e13, 0) } : null;
+      return label ? withPlace({ label, km: Math.round(n(d.km, 1, 5000, 10)), order: n(d.order, 0, 1e13, 0) }, d.place) : null;
     }
     case 'r': {
-      const riders = Array.isArray(d.riders) ? [...new Set(d.riders.filter(x => ID_RE.test(x)))].slice(0, 30) : [];
       if (!ID_RE.test(d.driver)) return null;
-      if (!riders.includes(d.driver)) riders.unshift(d.driver);
-      return { driver: d.driver, riders, km: Math.round(n(d.km, 1, 5000, 1)), label: str(d.label, 40) || 'Jízda', night: !!d.night, sober: !!d.sober, ts: ts(d.ts) };
+      const r = { driver: d.driver, riders: cleanRiders(d.riders, d.driver), km: Math.round(n(d.km, 1, 5000, 1)), label: str(d.label, 40) || 'Jízda', night: !!d.night, sober: !!d.sober, ts: ts(d.ts) };
+      if (d.auto) r.auto = true;
+      return r;
+    }
+    case 't': { // a ride in progress (planned route, navigation running)
+      if (!ID_RE.test(d.driver)) return null;
+      const end = cleanPlace(d.end);
+      if (!end) return null;
+      const stops = (Array.isArray(d.stops) ? d.stops : []).slice(0, 12)
+        .map(s => (s && ID_RE.test(s.id) && cleanPlace(s)) ? { id: s.id, ...cleanPlace(s) } : null).filter(Boolean);
+      return {
+        driver: d.driver, riders: cleanRiders(d.riders, d.driver), start: cleanPlace(d.start), stops, end,
+        km: Math.round(n(d.km, 0, 5000, 0) * 10) / 10, mins: Math.round(n(d.mins, 0, 6000, 0)), back: !!d.back,
+        label: str(d.label, 40) || 'Jízda', night: !!d.night, sober: !!d.sober,
+        nav: NAVS.includes(d.nav) ? d.nav : 'mapy', legs: !!d.legs, leg: Math.round(n(d.leg, 0, 20, 0)), ts: ts(d.ts)
+      };
     }
     case 'p': {
       if (!ID_RE.test(d.from) || !ID_RE.test(d.to) || d.from === d.to) return null;
@@ -120,7 +147,7 @@ function cleanDoc(key, d) {
     default: return null;
   }
 }
-const validKey = k => typeof k === 'string' && k.length <= 64 && /^(settings|(m|pr|r|p|c):[a-z0-9]{1,24}|off:\d{4}-\d{2}-\d{2}:[a-z0-9]{1,24})$/.test(k);
+const validKey = k => typeof k === 'string' && k.length <= 64 && /^(settings|(m|pr|r|p|c|t):[a-z0-9]{1,24}|off:\d{4}-\d{2}-\d{2}:[a-z0-9]{1,24})$/.test(k);
 
 /* =====================================================================
    Storage
@@ -250,7 +277,8 @@ function dateLabel(t) {
    ===================================================================== */
 function newGroup({ demo = false } = {}) {
   const id = 'g' + rid(8);
-  const g = { id, secret: demo || !SYNC_ON ? null : newSecret(), created: demo || !SYNC_ON, demo, rev: 0, syncedAt: 0, docs: {} };
+  const shared = SYNC_ON && !demo;
+  const g = { id, secret: shared ? newSecret() : null, enc: shared, created: !shared, demo, rev: 0, syncedAt: 0, docs: {} };
   store.groups[id] = g;
   return g;
 }
@@ -272,8 +300,8 @@ function createDemo() {
     const g = newGroup({ demo: true });
     const docs = g.docs, ids = {};
     docs.settings = { d: cleanDoc('settings', { title, kind, rates: DEFAULT_RATES }) };
-    ms.forEach(([key, name, color, car], i) => { ids[key] = rid(); docs['m:' + ids[key]] = { d: cleanDoc('m:x', { name, color, car, order: i, iban: car ? 'CZ6508000000192000145399' : '' }) }; });
-    prs.forEach(([label, km], i) => { docs['pr:' + rid()] = { d: cleanDoc('pr:x', { label, km, order: i }) }; });
+    ms.forEach(([key, name, color, car, place], i) => { ids[key] = rid(); docs['m:' + ids[key]] = { d: cleanDoc('m:x', { name, color, car, order: i, iban: car ? 'CZ6508000000192000145399' : '', place }) }; });
+    prs.forEach(([label, km, place], i) => { docs['pr:' + rid()] = { d: cleanDoc('pr:x', { label, km, order: i, place }) }; });
     rs.forEach(([ago, label, km, drv, riders, night, sober]) => {
       docs['r:' + rid()] = { d: cleanDoc('r:x', { label, km, driver: ids[drv], riders: riders.map(x => ids[x]), night, sober, ts: noon(ago) }) };
     });
@@ -281,8 +309,12 @@ function createDemo() {
     return g;
   };
   const a = make('Florbal – Trénink čtvrtek', 'Sportovní tým',
-    [['dom', 'Adam', '#1D5FA8', true], ['dav', 'Tomáš', '#C4332C', true], ['mic', 'Michal', '#2F7D4E', true], ['ste', 'Ondra', '#D97706', true], ['jan', 'Jakub', '#6B4FA0', false]],
-    [['Trénink hala', 24], ['Venkovní zápas', 68], ['Soustředění', 145], ['Týmová večeře', 18]],
+    [['dom', 'Adam', '#1D5FA8', true, { label: 'Náměstí Míru, Praha', lat: 50.07548, lon: 14.43754 }],
+     ['dav', 'Tomáš', '#C4332C', true, { label: 'Anděl, Praha', lat: 50.07106, lon: 14.40363 }],
+     ['mic', 'Michal', '#2F7D4E', true, { label: 'Dejvická, Praha', lat: 50.10027, lon: 14.39303 }],
+     ['ste', 'Ondra', '#D97706', true, { label: 'Palmovka, Praha', lat: 50.10431, lon: 14.47474 }],
+     ['jan', 'Jakub', '#6B4FA0', false, { label: 'Florenc, Praha', lat: 50.09051, lon: 14.43853 }]],
+    [['Trénink hala', 24, { label: 'Sportovní hala, Strahov', lat: 50.08063, lon: 14.38757 }], ['Venkovní zápas', 68], ['Soustředění', 145], ['Týmová večeře', 18]],
     [[0, 'Trénink hala', 24, 'dom', ['dom', 'dav', 'mic', 'jan']], [3, 'Venkovní zápas', 68, 'dom', ['dom', 'dav', 'ste', 'jan']],
      [7, 'Týmová oslava', 28, 'dom', ['dom', 'mic', 'ste', 'jan'], true, true], [14, 'Trénink hala', 24, 'ste', ['ste', 'dav', 'mic', 'jan']],
      [21, 'Trénink hala', 24, 'dav', ['dav', 'dom', 'mic', 'ste', 'jan']]],
@@ -306,6 +338,44 @@ function leaveGroup(id) {
    Sync (Supabase RPC over plain fetch – no third-party JS)
    ===================================================================== */
 const sync = { state: 'idle', timer: null, running: false, again: false };
+
+/* ---------- End-to-end encryption ----------
+   The invite secret itself never reaches the server. From it we derive
+   (HKDF-SHA256) a login token for the server and an AES-GCM key for the
+   documents, so the database only ever stores ciphertext.
+   Groups created before this (g.enc falsy) keep working unencrypted. */
+const te = new TextEncoder(), td = new TextDecoder();
+const b64u = buf => { let s = ''; new Uint8Array(buf).forEach(b => (s += String.fromCharCode(b))); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+const keyCache = new Map();
+async function groupKeys(g) {
+  if (!g.enc) return { auth: g.secret, key: null };
+  if (keyCache.has(g.secret)) return keyCache.get(g.secret);
+  const base = await crypto.subtle.importKey('raw', te.encode(g.secret), 'HKDF', false, ['deriveBits', 'deriveKey']);
+  const salt = te.encode('whodrives/v2');
+  const auth = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info: te.encode('auth') }, base, 192);
+  const key = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: te.encode('data') }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const out = { auth: b64u(auth), key };
+  keyCache.set(g.secret, out);
+  return out;
+}
+async function seal(keys, k, d) {
+  if (!keys.key || d == null) return d;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  // the document key is bound as associated data, so ciphertexts can't be swapped between documents
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: te.encode(k) }, keys.key, te.encode(JSON.stringify(d))));
+  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
+  return { e: b64u(out) };
+}
+async function unseal(keys, k, d) {
+  if (!keys.key) return d;
+  if (!d || typeof d.e !== 'string' || d.e.length > 8000) return null;
+  try {
+    const raw = unb64u(d.e);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12), additionalData: te.encode(k) }, keys.key, raw.slice(12));
+    return JSON.parse(td.decode(pt));
+  } catch (e) { return null; } // tampered or foreign data – ignore
+}
 
 async function rpc(fn, args) {
   const headers = { 'Content-Type': 'application/json', apikey: CONF.supabaseKey };
@@ -335,27 +405,29 @@ async function runSync() {
   setSyncState('busy');
   let changed = false;
   try {
+    const keys = await groupKeys(g);
     if (!g.created) {
-      await rpc('wd_create_group', { p_secret: g.secret });
+      await rpc('wd_create_group', { p_secret: keys.auth });
       g.created = true; persist();
     }
     // push local changes
     const dirty = Object.entries(g.docs).filter(([, v]) => v.dirty);
     for (let i = 0; i < dirty.length; i += 100) {
       const chunk = dirty.slice(i, i + 100);
-      await rpc('wd_push', { p_secret: g.secret, p_docs: chunk.map(([k, v]) => ({ k, d: v.del ? null : v.d, del: !!v.del })) });
+      const docs = await Promise.all(chunk.map(async ([k, v]) => ({ k, d: v.del ? null : await seal(keys, k, v.d), del: !!v.del })));
+      await rpc('wd_push', { p_secret: keys.auth, p_docs: docs });
       chunk.forEach(([k, v]) => { if (g.docs[k] === v) v.dirty = false; });
       persist();
     }
     // pull everything newer than what we have
     for (let page = 0; page < 50; page++) {
-      const res = await rpc('wd_pull', { p_secret: g.secret, p_since: g.rev || 0 });
+      const res = await rpc('wd_pull', { p_secret: keys.auth, p_since: g.rev || 0 });
       for (const row of res.docs || []) {
         if (!validKey(row.k)) continue;
         const local = g.docs[row.k];
         if (local && local.dirty) continue; // our newer edit wins, it is pushed next round
         if (row.del) { if (local && !local.del) changed = true; g.docs[row.k] = { d: null, del: true }; continue; }
-        const d = cleanDoc(row.k, row.d);
+        const d = cleanDoc(row.k, await unseal(keys, row.k, row.d));
         if (!d) continue;
         if (!local || JSON.stringify(local.d) !== JSON.stringify(d)) changed = true;
         g.docs[row.k] = { d, del: false };
@@ -406,7 +478,10 @@ if (SYNC_ON) {
 /* =====================================================================
    Sharing helpers
    ===================================================================== */
-const inviteUrl = g => `${location.origin}${location.pathname}#join=${g.secret}`;
+const inviteUrl = g => `${location.origin}${location.pathname}#${g.enc ? 'g' : 'join'}=${g.secret}`;
+/** Addresses are only stored where they stay private: local/demo groups or end-to-end encrypted ones. */
+const addrAllowed = (g = grp()) => !!g && (!g.secret || !!g.enc);
+const mapsReady = (g = grp()) => MAPY_ON && addrAllowed(g);
 const canShareLinks = () => SYNC_ON && /^https?:$/.test(location.protocol);
 
 async function shareText({ title, text, url }) {
@@ -514,7 +589,10 @@ function renderHome() {
     </div>
     <p class="why">${esc(reason(nd))}</p>
     <div class="acts">
-      <button class="btn dark" data-act="log" type="button">＋ Zapsat dnešní jízdu</button>
+      ${mapsReady()
+        ? `<button class="btn dark" data-act="trip" type="button">🧭 Vyrazit</button>
+           <button class="btn ghost" data-act="log" type="button">Zapsat</button>`
+        : `<button class="btn dark" data-act="log" type="button">＋ Zapsat dnešní jízdu</button>`}
       <button class="btn ghost" data-act="cant" data-id="${nd.id}" type="button">Nemůže</button>
     </div>
   </section>` : `
@@ -578,7 +656,7 @@ function renderRides() {
         ${av(d)}
         <span class="main">
           <b>${esc(r.label)}${r.night ? ' <span class="tag">🌙 noc ×1,2</span>' : ''}${r.sober ? ' <span class="tag sober">🥤 nepil ×1,5</span>' : ''}</b>
-          <small>${esc(dateLabel(r.ts))} • řidič ${esc(d.name)}</small>
+          <small>${esc(dateLabel(r.ts))} • řidič ${esc(d.name)}${r.auto ? ' • 📍 zapsáno samo' : ''}</small>
         </span>
         <span class="val">
           <span class="stack" title="${esc(passengers.map(i => M(i).name).join(', '))}">${passengers.map(i => av(M(i))).join('')}</span>
@@ -638,6 +716,10 @@ function renderGroup() {
       <div class="acts"><button class="btn primary" data-act="invite" type="button">${icons.share.replace('<svg', '<svg width="16" height="16" style="vertical-align:-3px;margin-right:6px"')}Sdílet odkaz</button></div>
       ${syncLineHtml()}</div>`;
   else share = `<div class="card"><h4>📱 Jen v tomhle zařízení</h4><p>${SYNC_ON ? 'Sdílení odkazem funguje, až bude appka nahraná na webu (https).' : 'Sdílení mezi telefony zatím není zapnuté. Data jsou uložená jen v tomhle prohlížeči.'}</p></div>`;
+  if (g.secret && !g.enc) share += `<div class="card" style="margin-top:10px"><h4>🔒 Starší skupina bez šifrování</h4>
+      <p>Adresy a plánování tras fungují jen v šifrovaných skupinách. Převodem vznikne kopie se šifrováním a novým odkazem, který pak pošleš partě.</p>
+      <div class="acts"><button class="btn primary" data-act="convert-enc" type="button">Převést na šifrovanou</button></div></div>`;
+  const showAddr = mapsReady(g) || ms.some(m => m.place);
 
   return `
   ${share}
@@ -655,7 +737,7 @@ function renderGroup() {
       ${av(m)}
       <span class="main">
         <b>${esc(m.name)}</b>
-        <small>${m.car ? '🚗 Má auto' : '🎒 Bez auta'}${m.car ? (m.iban ? ' • účet vyplněný' : ' • <span class="neg">chybí účet pro QR</span>') : ''}</small>
+        <small>${m.car ? '🚗 Má auto' : '🎒 Bez auta'}${m.car ? (m.iban ? ' • účet vyplněný' : ' • <span class="neg">chybí účet pro QR</span>') : ''}${showAddr ? (m.place ? ' • 📍 adresa' : ' • bez adresy') : ''}</small>
       </span>${icons.chev}
     </button>`).join('')}
     <button class="row row-btn add" data-act="add-member" type="button">＋ Přidat člena</button>
@@ -664,7 +746,7 @@ function renderGroup() {
   <div class="sec"><span>Oblíbené trasy</span><small>Rychlý výběr při zápisu</small></div>
   <div class="list">${prs.map(p => `
     <button class="row row-btn" data-act="edit-preset" data-id="${p.id}" type="button">
-      <span class="main"><b>${esc(p.label)}</b></span><span class="val">${p.km} km</span>${icons.chev}
+      <span class="main"><b>${esc(p.label)}</b>${showAddr ? `<small>${p.place ? '📍 ' + esc(p.place.label) : 'bez adresy cíle'}</small>` : ''}</span><span class="val">${p.km} km</span>${icons.chev}
     </button>`).join('')}
     <button class="row row-btn add" data-act="add-preset" type="button">＋ Přidat trasu</button>
   </div>
@@ -704,7 +786,7 @@ function render({ animate = false } = {}) {
   $('#tabs').hidden = !ready;
   if (!g) view.innerHTML = renderOnboard();
   else if (g.joining) view.innerHTML = `<div class="loading">⏳ Načítám skupinu…</div>`;
-  else view.innerHTML = views[tab]();
+  else view.innerHTML = tripBarsHtml() + views[tab]();
   if (animate) { view.classList.remove('view-enter'); void view.offsetWidth; view.classList.add('view-enter'); }
   document.querySelectorAll('#tabs button').forEach(b => {
     if (b.dataset.tab === tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
@@ -736,7 +818,7 @@ function closeSheet() {
   if (!$('#app').classList.contains('open')) return;
   $('#app').classList.remove('open');
   BG.forEach(s => $(s).removeAttribute('inert'));
-  draft = null; qrCtx = null; sheetKind = null;
+  draft = null; qrCtx = null; sheetKind = null; tp = null;
   if (lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
 }
 
@@ -893,6 +975,11 @@ function openMemberSheet(id) {
       <input class="inp" id="fIban" inputmode="text" autocomplete="off" spellcheck="false" maxlength="42" placeholder="123456789/0800 nebo CZ…" value="${esc(ibanToLocal(m?.iban))}">
       <span class="hint" id="ibanHint">Na tenhle účet pošlou peníze ti, kdo nemají auto. Uvidí ho jen lidé ve skupině.</span>
     </label>
+    ${mapsReady() ? placeFieldHtml('member', m?.place, {
+      label: 'Kde nastupuje',
+      hint: 'Stačí roh ulice nebo zastávka, kde ho můžou nabrat. Adresu vidí jen lidé ve skupině a je šifrovaná.',
+      gps: true
+    }) : ''}
     <div class="sheet-acts">
       ${m ? `<button class="btn danger" data-act="delete-member" data-id="${m.id}" type="button">Odebrat</button>` : `<button class="btn soft" data-act="close-modal" type="button">Zrušit</button>`}
       <button class="btn primary" data-act="save-member" data-id="${m ? m.id : ''}" type="button">Uložit</button>
@@ -904,6 +991,7 @@ function openPresetSheet(id) {
   openSheetShell(`${sheetHead(p ? 'Upravit trasu' : 'Nová trasa')}
     <label class="fld"><span>Název</span><input class="inp" id="fLabel" maxlength="40" placeholder="např. Trénink hala" value="${esc(p?.label || '')}" ${p ? '' : 'autofocus'}></label>
     <label class="fld"><span>Kilometrů tam i zpět</span><input class="inp" id="fKm" type="number" inputmode="numeric" min="1" max="5000" value="${p ? p.km : ''}"></label>
+    ${mapsReady() ? placeFieldHtml('preset', p?.place, { label: 'Adresa cíle', hint: 'Podle ní appka naplánuje cestu přes všechny, koho vezeš.' }) : ''}
     <div class="sheet-acts">
       ${p ? `<button class="btn danger" data-act="delete-preset" data-id="${p.id}" type="button">Smazat</button>` : `<button class="btn soft" data-act="close-modal" type="button">Zrušit</button>`}
       <button class="btn primary" data-act="save-preset" data-id="${p ? p.id : ''}" type="button">Uložit</button>
@@ -1075,7 +1163,7 @@ const actions = {
     const used = new Set(ms.map(m => m.color));
     const color = old?.color || PALETTE.find(c => !used.has(c)) || PALETTE[ms.length % PALETTE.length];
     const car = checked('fCar');
-    put('m:' + (id || rid()), { name, car, iban: acc.iban || '', color, order: old ? old.order : Date.now() });
+    put('m:' + (id || rid()), { name, car, iban: acc.iban || '', color, order: old ? old.order : Date.now(), place: placeValue('member', old?.place) });
     const wasQr = qrCtx;
     closeSheet(); render();
     toast(old ? '✓ Uloženo' : `✓ ${name} je ve skupině.`);
@@ -1098,7 +1186,7 @@ const actions = {
     if (!label) return fieldError('fLabel', 'Zadej název trasy.');
     if (!(km >= 1 && km <= 5000)) return fieldError('fKm', 'Zadej kilometry (1–5000).');
     const old = t.dataset.id ? presets().find(p => p.id === t.dataset.id) : null;
-    put('pr:' + (t.dataset.id || rid()), { label, km, order: old ? old.order : Date.now() });
+    put('pr:' + (t.dataset.id || rid()), { label, km, order: old ? old.order : Date.now(), place: placeValue('preset', old?.place) });
     closeSheet(); render(); toast('✓ Trasa uložena');
   },
   'delete-preset': t => { del('pr:' + t.dataset.id); closeSheet(); render(); toast('Trasa smazána.'); },
@@ -1166,7 +1254,18 @@ const actions = {
     if (committed().has(s.from)) put('c:' + s.from, { on: false });
     closeSheet(); render();
     toast(`✓ ${M(s.from).name} má vyrovnáno (${kcFmt(s.kc)}).`, { label: 'Vrátit', run: () => { del(key); render(); } });
-  }
+  },
+  'convert-enc': () => {
+    const old = grp();
+    if (!confirm('Vytvořit šifrovanou kopii skupiny s novým odkazem? Starý odkaz pak už nebude dostávat novinky – pošli partě ten nový.')) return;
+    const g = newGroup();
+    for (const [k, v] of Object.entries(old.docs)) if (!v.del && v.d) g.docs[k] = { d: v.d, dirty: true };
+    store.current = g.id;
+    delete store.groups[old.id];
+    persist(); scheduleSync(50); render();
+    toast('🔒 Hotovo – skupina je šifrovaná. Pošli partě nový odkaz.');
+  },
+  ...mapActions
 };
 
 function toggleAvail(id, fromHero) {
@@ -1194,6 +1293,7 @@ document.addEventListener('click', e => {
   const a = t.dataset.act;
   if (a && actions[a]) return actions[a](t);
 
+  if (t.dataset.tp) return tripClick(t);
   const s = t.dataset.s;
   if (s === 'toggle') { t.setAttribute('aria-checked', t.getAttribute('aria-checked') !== 'true'); return; }
   if (!s || !draft) return;
@@ -1217,9 +1317,15 @@ document.addEventListener('click', e => {
   }
   renderRideSheet();
 });
+// Links that also do something in the app (e.g. "start navigation"): run the action, let the link open.
+document.addEventListener('click', e => {
+  const a = e.target.closest('a[data-act]');
+  if (a && actions[a.dataset.act]) actions[a.dataset.act](a);
+});
 
 document.addEventListener('input', e => {
   e.target.classList?.remove('bad');
+  if (e.target.dataset?.place) return placeInput(e.target);
   if (!draft) return;
   if (e.target.id === 'kmIn') {
     const v = parseInt(e.target.value, 10);
@@ -1231,7 +1337,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('focusout', e => { if (e.target.id === 'kmIn' && draft && draft.km) e.target.value = draft.km; });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && e.target.matches?.('#sheet input.inp:not(#labelIn)')) {
+  if (e.key === 'Enter' && e.target.matches?.('#sheet input.inp:not(#labelIn):not([data-place])')) {
     const primary = document.querySelector('#sheet .sheet-acts .btn.primary');
     if (primary) { e.preventDefault(); primary.click(); }
   }
@@ -1249,16 +1355,16 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', ev => {
    Start
    ===================================================================== */
 function handleJoinLink() {
-  const m = location.hash.match(/^#join=([A-Za-z0-9_-]+)$/);
+  const m = location.hash.match(/^#(join|g)=([A-Za-z0-9_-]+)$/);
   if (!m) return;
   history.replaceState(null, '', location.pathname + location.search); // don't keep the secret in the address bar
-  const secret = m[1];
+  const secret = m[2], enc = m[1] === 'g';
   if (!SECRET_RE.test(secret)) return toast('Odkaz na skupinu je poškozený.');
   if (!SYNC_ON) return toast('Sdílení skupin tady není zapnuté.');
   const existing = Object.values(store.groups).find(g => g.secret === secret);
   if (existing) { store.current = existing.id; persist(); return; }
   const g = newGroup();
-  g.secret = secret; g.created = true; g.joining = true;
+  g.secret = secret; g.enc = enc; g.created = true; g.joining = true;
   store.current = g.id;
   persist();
   tab = 'home';
@@ -1270,8 +1376,9 @@ if (store.current && !store.groups[store.current]) store.current = Object.keys(s
 handleJoinLink();
 render();
 scheduleSync(50);
+startTripWatch();
 addEventListener('hashchange', () => {
-  if (!/^#join=/.test(location.hash)) return;
+  if (!/^#(join|g)=/.test(location.hash)) return;
   closeSheet(); handleJoinLink(); render({ animate: true }); scheduleSync(50);
 });
 
