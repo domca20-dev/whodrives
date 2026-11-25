@@ -477,7 +477,7 @@ function renderHeader() {
 
 function renderOnboard() {
   return `<div class="onboard">
-    <div class="logo" aria-hidden="true">W</div>
+    <div class="logo" aria-hidden="true"><svg class="wd-icon" viewBox="68 -724 476 476" aria-hidden="true"><g transform="scale(1 -1)"><path d="M174.9141 724L437.0859 724C496.133 724 544 676.133 544 617.0859L544 354.9141C544 295.867 496.133 248 437.0859 248L174.9141 248C115.867 248 68 295.867 68 354.9141L68 617.0859C68 676.133 115.867 724 174.9141 724Z" fill="#F5C428"/><path d="M129.3594 557.5859L167.4394 557.5859L187.6694 464.7659L213.8494 557.5859L253.1194 557.5859L279.2994 464.7659L299.5294 557.5859L337.6094 557.5859L297.1494 414.7859L256.6894 414.7859L233.4844 504.0359L210.2794 414.7859L169.8194 414.7859Z" fill="#23272E"/><path d="M345.9394 557.5859L411.3894 557.5859C450.8226 557.5859 482.7894 525.619 482.7894 486.1859C482.7894 446.7528 450.8226 414.7859 411.3894 414.7859L305.4794 414.7859ZM374.4994 524.2659L410.1994 524.2659C431.2304 524.2659 448.2794 507.217 448.2794 486.1859C448.2794 465.155 431.2304 448.1059 410.1994 448.1059L353.0794 448.1059Z" fill="#23272E" fill-rule="evenodd"/></g></svg></div>
     <h2>Kdo dnes řídí?</h2>
     <p>Appka hlídá, kdo kolik odřídil, a férově vybere dalšího řidiče. Kdo nemá auto, dorovná to QR platbou.</p>
     <button class="btn primary" data-act="new-group" type="button">Založit skupinu</button>
