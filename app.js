@@ -645,7 +645,7 @@ function renderHome() {
     <div class="lbl-row"><span class="lbl">🎡 Remíza v kilometrech</span></div>
     <div class="who">
       <div class="tie-avs">${tieAvs}</div>
-      <div><span class="big">Kolo štěstí</span><small>${esc(joinNames(pick.tied.map(m => m.id === me ? 'ty' : m.name)))} – stejně ${kmFmt(pick.km)}</small></div>
+      <div><span class="big">Kolo štěstí</span><small>${esc(joinNames(pick.tied.map(m => m.name)))} – stejně ${kmFmt(pick.km)}</small></div>
     </div>
     <p class="why">Kdo dnes řídí, rozhodne kolo. Na telefonech celé party vyjde stejně.</p>
     <div class="acts"><button class="btn dark" data-act="wheel" type="button">🎡 Roztočit kolo</button></div>
@@ -922,13 +922,13 @@ function wheelCheck() {
   if (p.tied.length && !wheelSeen(p)) openWheel(p);
 }
 
-function wheelSvg(segs, me) {
+function wheelSvg(segs) {
   const n = segs.length, step = 360 / n, r = 100;
   const pt = (deg, rad) => { const a = deg * Math.PI / 180; return `${(rad * Math.sin(a)).toFixed(2)} ${(-rad * Math.cos(a)).toFixed(2)}`; };
   const fs = n <= 3 ? 16 : n <= 5 ? 13 : 11, max = n <= 4 ? 10 : 7;
   const slices = segs.map((m, i) => {
     const a0 = i * step, mid = a0 + step / 2;
-    const nm = m.id === me ? 'Ty' : m.name.length > max ? m.name.slice(0, max - 1) + '…' : m.name;
+    const nm = m.name.length > max ? m.name.slice(0, max - 1) + '…' : m.name;
     return `<path d="M0 0L${pt(a0, r)}A${r} ${r} 0 0 1 ${pt(a0 + step, r)}Z" fill="${esc(m.color)}"/>
       <text transform="rotate(${mid.toFixed(2)})" y="${n <= 3 ? -54 : -62}" font-size="${fs}">${esc(nm)}</text>`;
   }).join('');
@@ -937,7 +937,7 @@ function wheelSvg(segs, me) {
 
 function openWheel(p) {
   closeWheel(true);
-  const me = meId(), segs = p.tied, n = segs.length, step = 360 / n;
+  const segs = p.tied, n = segs.length, step = 360 / n;
   const wi = segs.findIndex(m => m.id === p.driver.id);
   // land inside the winner's slice, a little off-centre, the same way on every phone
   const jitter = ((Math.floor(p.h / 7) % 1000) / 1000 - 0.5) * 0.7 * step;
@@ -949,7 +949,7 @@ function openWheel(p) {
     <span class="wheel-lbl">🎡 Remíza v kilometrech</span>
     <h3 id="wheelTitle" tabindex="-1">Kdo dnes řídí?</h3>
     <p class="wheel-sub">${esc(joinNames(segs.map(m => m.name)))} mají stejnou bilanci (${kmFmt(p.km)}). Rozhodne kolo – na telefonech celé party vyjde stejně.</p>
-    <div class="wheel-wrap">${wheelSvg(segs, me)}<svg class="wheel-hub" viewBox="-24 -24 48 48" aria-hidden="true"><circle r="21"/><text y="5">WD</text></svg><svg class="wheel-pin" viewBox="0 0 30 34" aria-hidden="true"><path d="M3 3h24L15 31z"/></svg></div>
+    <div class="wheel-wrap">${wheelSvg(segs)}<svg class="wheel-hub" viewBox="-24 -24 48 48" aria-hidden="true"><circle r="21"/><text y="5">WD</text></svg><svg class="wheel-pin" viewBox="0 0 30 34" aria-hidden="true"><path d="M3 3h24L15 31z"/></svg></div>
     <div class="wheel-res" aria-live="polite"></div>
     <div class="wheel-acts"><button class="btn outline" data-act="wheel-skip" type="button">Přeskočit</button></div>
   </div>`;
@@ -974,7 +974,7 @@ function wheelReveal() {
   const disc = el.querySelector('.wheel-disc');
   disc.style.transition = 'none'; disc.style.transform = `rotate(${target}deg)`;
   el.classList.add('done');
-  el.querySelector('.wheel-res').innerHTML = `${av(d)}<div><b>${mine ? '🎉 Kolo vybralo tebe!' : `🎉 Dnes řídí ${esc(d.name)}`}</b><small>Celé partě vyšlo totéž.</small></div>`;
+  el.querySelector('.wheel-res').innerHTML = `${av(d)}<div><b>🎉 Dnes řídí ${esc(d.name)}</b><small>${mine ? 'To jsi ty 🙂 ' : ''}Celé partě vyšlo totéž.</small></div>`;
   el.querySelector('.wheel-acts').innerHTML = `<button class="btn outline" data-act="wheel-nudge" data-id="${d.id}" type="button">📣 Poslat partě</button>
     <button class="btn primary" data-act="wheel-close" type="button">Super 👍</button>`;
   el.querySelector('[data-act="wheel-close"]').focus({ preventScroll: true });
