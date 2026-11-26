@@ -240,14 +240,42 @@ function balances() {
   return b;
 }
 
-function nextDriver() {
-  const b = balances(), off = offToday();
-  return members().filter(m => m.car && !off.has(m.id)).sort((x, y) => b[x.id] - b[y.id] || x.order - y.order)[0];
+/* ---------- Tie in km → wheel of fortune ----------
+   Balances that look the same (whole km, as shown) are settled by a draw. Every phone in
+   the group computes it the same way from the group secret, today's date and who is tied,
+   so all of them agree without another server round-trip, and switching people off and
+   back on can't re-roll it (the same set of people gives the same result all day). */
+const kmShown = v => Math.sign(v) * Math.round(Math.abs(v));
+function hash53(str) { // cyrb53 – small, well-mixed, synchronous
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
+function pickDriver() {
+  const b = balances(), off = offToday(), g = grp();
+  const cands = members().filter(m => m.car && !off.has(m.id)).sort((x, y) => b[x.id] - b[y.id] || x.order - y.order);
+  if (!cands.length) return { driver: null, tied: [] };
+  const low = kmShown(b[cands[0].id]);
+  const tied = cands.filter(m => kmShown(b[m.id]) === low).sort((x, y) => x.order - y.order);
+  if (tied.length < 2) return { driver: cands[0], tied: [] };
+  const ids = tied.map(m => m.id).sort(), day = ymd();
+  const h = hash53(`${g.secret || g.id}|${day}|${ids.join(',')}`);
+  const driver = tied.find(m => m.id === ids[h % ids.length]);
+  return { driver, tied, km: low, h, sig: `${day}|${ids.join(',')}` };
+}
+const nextDriver = () => pickDriver().driver;
+const joinNames = a => (a.length < 2 ? a.join('') : `${a.slice(0, -1).join(', ')} a ${a[a.length - 1]}`);
 
-function reason(m) {
+function reason(m, p = pickDriver()) {
   const b = balances();
-  const parts = [`Má nejnižší bilanci ze všech, kdo dnes můžou (${kmFmt(b[m.id])}).`];
+  const parts = [p.tied.length
+    ? `${joinNames(p.tied.map(x => x.name))} mají stejnou bilanci (${kmFmt(p.km)}), takže rozhodlo kolo štěstí.`
+    : `Má nejnižší bilanci ze všech, kdo dnes můžou (${kmFmt(b[m.id])}).`];
   const out = members().filter(x => offToday().has(x.id)).map(x => x.name);
   if (out.length) parts.push(`${out.join(' a ')} dnes ${out.length > 1 ? 'nemůžou' : 'nemůže'}.`);
   return parts.join(' ');
@@ -469,6 +497,7 @@ async function runSync() {
   } finally {
     sync.running = false;
     if (changed) render();
+    wheelCheck(); // the app was just opened/resumed: decide on the wheel with fresh data
     if (sync.again) { sync.again = false; scheduleSync(300); }
   }
 }
@@ -592,7 +621,8 @@ function renderHome() {
     </div>`;
   }
   const b = balances();
-  const nd = nextDriver();
+  const pick = pickDriver(), nd = pick.driver;
+  const tie = pick.tied.length > 0, spun = tie && wheelSeen(pick);
   const off = offToday();
   const max = Math.max(...Object.values(b).map(Math.abs), 1);
   const sorted = [...ms].sort((x, y) => b[y.id] - b[x.id]);
@@ -606,17 +636,30 @@ function renderHome() {
     <div class="chips" style="margin-top:10px">${ms.map(m => `<button class="chip" data-act="set-me" data-id="${m.id}" type="button">${av(m)}<span class="nm">${esc(m.name)}</span></button>`).join('')}
       <button class="chip" data-act="me-new" type="button">＋ <span class="nm">Nejsem tu</span></button></div>
   </section>` : '';
-  const hero = nd ? `
+  const tieAvs = pick.tied.slice(0, 4).map(m => av(m)).join('') + (pick.tied.length > 4 ? `<span class="av more">+${pick.tied.length - 4}</span>` : '');
+  const sub = nd && (tie
+    ? (nd.id === me ? `${esc(nd.name)}, kolo štěstí vybralo tebe` : 'Vybralo kolo štěstí 🎡')
+    : (nd.id === me ? `${esc(nd.name)}, jsi na řadě – férově podle ujetých km` : 'Férová volba podle ujetých km'));
+  const hero = tie && !spun ? `
+  <section class="today tie" aria-label="Dnešní řidič">
+    <div class="lbl-row"><span class="lbl">🎡 Remíza v kilometrech</span></div>
+    <div class="who">
+      <div class="tie-avs">${tieAvs}</div>
+      <div><span class="big">Kolo štěstí</span><small>${esc(joinNames(pick.tied.map(m => m.id === me ? 'ty' : m.name)))} – stejně ${kmFmt(pick.km)}</small></div>
+    </div>
+    <p class="why">Kdo dnes řídí, rozhodne kolo. Na telefonech celé party vyjde stejně.</p>
+    <div class="acts"><button class="btn dark" data-act="wheel" type="button">🎡 Roztočit kolo</button></div>
+  </section>` : nd ? `
   <section class="today" aria-label="Dnešní řidič">
     <div class="lbl-row">
-      <span class="lbl">🎯 Dnes bere auto</span>
+      <span class="lbl">${tie ? '🎡 Dnes bere auto' : '🎯 Dnes bere auto'}</span>
       <button class="nudge-btn" data-act="nudge" data-id="${nd.id}" type="button">${icons.share} Poslat partě</button>
     </div>
     <div class="who">
       ${av(nd)}
-      <div><span class="big">${nd.id === me ? 'Ty 🙂' : esc(nd.name)}</span><small>${nd.id === me ? `${esc(nd.name)}, jsi na řadě – férově podle ujetých km` : 'Férová volba podle ujetých km'}</small></div>
+      <div><span class="big">${nd.id === me ? 'Ty 🙂' : esc(nd.name)}</span><small>${sub}</small></div>
     </div>
-    <p class="why">${esc(reason(nd))}</p>
+    <p class="why">${esc(reason(nd, pick))}${tie ? ` <button class="replay" data-act="wheel" type="button">🎡 Přehrát kolo</button>` : ''}</p>
     <div class="acts">
       ${mapsReady()
         ? `<button class="btn dark" data-act="trip" type="button">🧭 Vyrazit</button>
@@ -856,6 +899,97 @@ function closeSheet() {
   if (lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
 }
 
+/* ---------- Wheel of fortune (tie in km) ----------
+   Shown once per phone for each new tie (day + who is tied) when the app is opened,
+   brought back to the foreground or the group is switched. The hero can replay it. */
+const WHEEL_KEY = 'whodrives.wheel';
+const wheelSeen = (p, g = grp()) => !!p.sig && readMap(WHEEL_KEY)[g.id] === p.sig;
+function markWheelSeen(p, g = grp()) { const m = readMap(WHEEL_KEY); m[g.id] = p.sig; writeMap(WHEEL_KEY, m); }
+let wheel = null, wheelArmed = false;
+
+function wheelOnOpen() {
+  wheelArmed = true;
+  // shared groups decide after the sync that follows (fresh data); local ones right away
+  if (!SYNC_ON || !grp()?.secret) setTimeout(wheelCheck, 350);
+}
+function wheelCheck() {
+  if (!wheelArmed || document.visibilityState === 'hidden') return;
+  const g = grp();
+  if (!g || g.joining) return; // still loading – stay armed
+  wheelArmed = false;
+  if (wheel || $('#app').classList.contains('open') || members().length < 2) return;
+  const p = pickDriver();
+  if (p.tied.length && !wheelSeen(p)) openWheel(p);
+}
+
+function wheelSvg(segs, me) {
+  const n = segs.length, step = 360 / n, r = 100;
+  const pt = (deg, rad) => { const a = deg * Math.PI / 180; return `${(rad * Math.sin(a)).toFixed(2)} ${(-rad * Math.cos(a)).toFixed(2)}`; };
+  const fs = n <= 3 ? 16 : n <= 5 ? 13 : 11, max = n <= 4 ? 10 : 7;
+  const slices = segs.map((m, i) => {
+    const a0 = i * step, mid = a0 + step / 2;
+    const nm = m.id === me ? 'Ty' : m.name.length > max ? m.name.slice(0, max - 1) + '…' : m.name;
+    return `<path d="M0 0L${pt(a0, r)}A${r} ${r} 0 0 1 ${pt(a0 + step, r)}Z" fill="${esc(m.color)}"/>
+      <text transform="rotate(${mid.toFixed(2)})" y="${n <= 3 ? -54 : -62}" font-size="${fs}">${esc(nm)}</text>`;
+  }).join('');
+  return `<svg class="wheel-disc" viewBox="-104 -104 208 208" aria-hidden="true"><circle class="rim" r="104"/>${slices}</svg>`;
+}
+
+function openWheel(p) {
+  closeWheel(true);
+  const me = meId(), segs = p.tied, n = segs.length, step = 360 / n;
+  const wi = segs.findIndex(m => m.id === p.driver.id);
+  // land inside the winner's slice, a little off-centre, the same way on every phone
+  const jitter = ((Math.floor(p.h / 7) % 1000) / 1000 - 0.5) * 0.7 * step;
+  const target = 360 * 6 + (360 - (wi + 0.5) * step) + jitter;
+  const el = document.createElement('div');
+  el.className = 'wheel-ov'; el.id = 'wheel';
+  el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-labelledby', 'wheelTitle');
+  el.innerHTML = `<div class="wheel-card">
+    <span class="wheel-lbl">🎡 Remíza v kilometrech</span>
+    <h3 id="wheelTitle" tabindex="-1">Kdo dnes řídí?</h3>
+    <p class="wheel-sub">${esc(joinNames(segs.map(m => m.name)))} mají stejnou bilanci (${kmFmt(p.km)}). Rozhodne kolo – na telefonech celé party vyjde stejně.</p>
+    <div class="wheel-wrap">${wheelSvg(segs, me)}<svg class="wheel-hub" viewBox="-24 -24 48 48" aria-hidden="true"><circle r="21"/><text y="5">WD</text></svg><svg class="wheel-pin" viewBox="0 0 30 34" aria-hidden="true"><path d="M3 3h24L15 31z"/></svg></div>
+    <div class="wheel-res" aria-live="polite"></div>
+    <div class="wheel-acts"><button class="btn outline" data-act="wheel-skip" type="button">Přeskočit</button></div>
+  </div>`;
+  $('#app').appendChild(el);
+  BG.forEach(s => $(s).setAttribute('inert', ''));
+  markWheelSeen(p);
+  const dur = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 4800;
+  wheel = { el, p, target, done: false, timer: setTimeout(wheelReveal, dur + 200) };
+  const disc = el.querySelector('.wheel-disc');
+  void disc.getBoundingClientRect(); // start from 0° so the transition runs
+  el.classList.add('show');
+  disc.style.transition = `transform ${dur}ms cubic-bezier(.12,.7,.15,1)`;
+  disc.style.transform = `rotate(${target}deg)`;
+  el.querySelector('#wheelTitle').focus({ preventScroll: true });
+}
+
+function wheelReveal() {
+  if (!wheel || wheel.done) return;
+  clearTimeout(wheel.timer);
+  wheel.done = true;
+  const { el, p, target } = wheel, d = p.driver, mine = d.id === meId();
+  const disc = el.querySelector('.wheel-disc');
+  disc.style.transition = 'none'; disc.style.transform = `rotate(${target}deg)`;
+  el.classList.add('done');
+  el.querySelector('.wheel-res').innerHTML = `${av(d)}<div><b>${mine ? '🎉 Kolo vybralo tebe!' : `🎉 Dnes řídí ${esc(d.name)}`}</b><small>Celé partě vyšlo totéž.</small></div>`;
+  el.querySelector('.wheel-acts').innerHTML = `<button class="btn outline" data-act="wheel-nudge" data-id="${d.id}" type="button">📣 Poslat partě</button>
+    <button class="btn primary" data-act="wheel-close" type="button">Super 👍</button>`;
+  el.querySelector('[data-act="wheel-close"]').focus({ preventScroll: true });
+  render();
+}
+
+function closeWheel(silent) {
+  if (!wheel) return;
+  clearTimeout(wheel.timer);
+  wheel.el.remove();
+  wheel = null;
+  if (!$('#app').classList.contains('open')) BG.forEach(s => $(s).removeAttribute('inert'));
+  if (!silent) render();
+}
+
 /* ---------- Ride sheet (new + edit) ---------- */
 function openRideSheet(key) {
   const ms = members();
@@ -977,8 +1111,10 @@ function saveRide() {
   if (committed().has(d.driver)) put('c:' + d.driver, { on: false });
   closeSheet(); render();
   if (prev) return toast('✓ Jízda upravena.', { label: 'Vrátit', run: () => { put(key, prev); render(); } });
-  const nd = nextDriver();
-  toast(`✓ Uloženo ${d.km} km. Příště řídí ${nd ? nd.name : 'někdo z dostupných'}.`, { label: 'Vrátit', run: () => { del(key); render(); } });
+  // today's draw says nothing about next time (another day = another draw), so don't name anyone on a tie
+  const p = pickDriver();
+  const next = p.tied.length ? 'Příště je remíza – rozhodne kolo štěstí.' : `Příště řídí ${p.driver ? p.driver.name : 'někdo z dostupných'}.`;
+  toast(`✓ Uloženo ${d.km} km. ${next}`, { label: 'Vrátit', run: () => { del(key); render(); } });
 }
 
 /* ---------- Generic form sheets ---------- */
@@ -1160,6 +1296,7 @@ function switchGroup(id) {
   store.current = id; tab = 'home'; persist();
   render({ animate: true });
   scheduleSync(50);
+  wheelOnOpen();
 }
 const val = id => document.getElementById(id)?.value ?? '';
 const checked = id => document.getElementById(id)?.getAttribute('aria-checked') === 'true';
@@ -1258,9 +1395,16 @@ const actions = {
   },
   'copy': t => copy(t.dataset.text),
   'nudge': t => {
-    const m = M(t.dataset.id);
-    shareText({ title: 'Kdo dnes řídí', text: `🚗 Dnes řídí ${m.name} (${settings().title}). Férově podle ujetých km – WhoDrives.` });
+    const m = M(t.dataset.id), p = pickDriver();
+    const how = p.tied.length && p.driver?.id === m.id
+      ? `Remíza v km (${joinNames(p.tied.map(x => x.name))}), rozhodlo kolo štěstí 🎡`
+      : 'Férově podle ujetých km';
+    shareText({ title: 'Kdo dnes řídí', text: `🚗 Dnes řídí ${m.name} (${settings().title}). ${how} – WhoDrives.` });
   },
+  'wheel': () => { const p = pickDriver(); if (p.tied.length) openWheel(p); },
+  'wheel-skip': () => wheelReveal(),
+  'wheel-close': () => closeWheel(),
+  'wheel-nudge': t => { closeWheel(); actions.nudge(t); },
   'log': () => openRideSheet(null),
   'edit-ride': t => openRideSheet(t.dataset.k),
   'edit-pay': t => openPaySheet(t.dataset.k),
@@ -1336,8 +1480,10 @@ function toggleAvail(id, fromHero) {
   put(key, { on: !isOff });
   render();
   if (fromHero) {
-    const nd = nextDriver();
-    toast(nd ? `Dobře, dnes to bere ${nd.name}.` : 'Nikdo další s autem dnes nemůže.', { label: 'Zpět', run: () => { put(key, { on: false }); render(); } });
+    const p = pickDriver();
+    const msg = p.tied.length && !wheelSeen(p) ? 'Teď je remíza v km – rozhodne kolo štěstí 🎡'
+      : p.driver ? `Dobře, dnes to bere ${p.driver.name}.` : 'Nikdo další s autem dnes nemůže.';
+    toast(msg, { label: 'Zpět', run: () => { put(key, { on: false }); render(); } });
   }
 }
 
@@ -1407,6 +1553,7 @@ document.addEventListener('keydown', e => {
     if (primary) { e.preventDefault(); primary.click(); }
   }
   if (e.key !== 'Escape') return;
+  if (wheel) { if (wheel.done) closeWheel(); else wheelReveal(); return; }
   if ($('#app').classList.contains('open')) closeSheet();
   else setGroupPicker(false);
 });
@@ -1441,11 +1588,13 @@ if (store.current && !store.groups[store.current]) store.current = Object.keys(s
 handleJoinLink();
 render();
 scheduleSync(50);
+wheelOnOpen();
 startTripWatch();
 addEventListener('hashchange', () => {
   if (!/^#(join|g)=/.test(location.hash)) return;
-  closeSheet(); handleJoinLink(); render({ animate: true }); scheduleSync(50);
+  closeSheet(); handleJoinLink(); render({ animate: true }); scheduleSync(50); wheelOnOpen();
 });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') wheelOnOpen(); });
 
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
